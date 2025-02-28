@@ -1,6 +1,6 @@
-from pyHalo.PresetModels.cdm import CDM
+from pyHalo.PresetModels.cdm import CDM, CDMCorrelatedStructure
 from pyHalo.PresetModels.wdm import WDM, WDM_mixed
-from pyHalo.PresetModels.sidm import SIDM_core_collapse
+from pyHalo.PresetModels.sidm import SIDM_core_collapse, SIDM_parametric
 from pyHalo.PresetModels.uldm import ULDM
 from pyHalo.preset_models import preset_model_from_name
 from pyHalo.PresetModels.external import CDMFromEmulator, DMFromGalacticus
@@ -15,31 +15,73 @@ from pyHalo.Cosmology.cosmology import Cosmology
 
 class TestPresetModels(object):
 
+    def _test_default_infall_model(self, realization, default):
+
+        lens_cosmo = realization.lens_cosmo
+        infall_redshift_model = lens_cosmo._z_infall_model
+        npt.assert_string_equal(default, infall_redshift_model.name)
+
     def test_CDM(self):
 
         cdm = CDM(0.5, 1.5)
         _ = cdm.lensing_quantities()
         _ = preset_model_from_name('CDM')
 
-        cdm = CDM(0.5, 1.5,
-                  truncation_model_subhalos='TRUNCATION_GALACTICUS')
         cdm2 = CDM(0.6, 1.5, log_m_host=13.3,
                   truncation_model_subhalos='TRUNCATION_GALACTICUS')
         cdm3 = CDM(0.6, 1.5, log_m_host=13.3,
                    truncation_model_subhalos='TRUNCATION_GALACTICUS',
-                   host_scaling_factor=4.0, redshift_scaling_factor=2.0)
+                   host_scaling_factor=4.0, redshift_scaling_factor=2.0,
+                   infall_redshift_model='DIRECT_INFALL', kwargs_infall_model={})
         halos2 = len(cdm2.halos)
         halos3 = len(cdm3.halos)
         npt.assert_equal(halos3 > halos2, True)
+
+        self._test_default_infall_model(cdm, 'hybrid')
+        self._test_default_infall_model(cdm3, 'direct')
+
+        kwargs_globular_clusters = {'log10_mgc_mean': 5.0,
+                                    'log10_mgc_sigma': 0.5,
+                                    'rendering_radius_arcsec': 0.1,
+                                    }
+        cdm = CDM(0.5, 1.5,
+                  add_globular_clusters=True,
+                  kwargs_globular_clusters=kwargs_globular_clusters)
+        _ = cdm.lensing_quantities()
+
+    def test_CDM_correlated_structure_only(self):
+
+        cdm = CDMCorrelatedStructure(0.5, 1.5)
+        _ = cdm.lensing_quantities()
 
     def test_WDM(self):
 
         wdm = WDM(0.5, 1.5, 8.0)
         _ = wdm.lensing_quantities()
         _ = preset_model_from_name('WDM')
+        self._test_default_infall_model(wdm, 'hybrid')
+        kwargs_globular_clusters = {'log10_mgc_mean': 5.0,
+                                    'log10_mgc_sigma': 0.5,
+                                    'rendering_radius_arcsec': 0.1,
+                                    }
+        wdm = WDM(0.5, 1.5,
+                  7.7,
+                  add_globular_clusters=True,
+                  kwargs_globular_clusters=kwargs_globular_clusters)
+        _ = wdm.lensing_quantities()
 
-        _ = WDM(0.5, 1.5, 8.0,
-                  truncation_model_subhalos='TRUNCATION_GALACTICUS')
+    def test_SIDM(self):
+
+        mass_ranges = [[6, 8], [8, 10]]
+        collapse_times = [10.5, 1.0]
+        sidm = SIDM_parametric(0.5, 1.5, mass_ranges, collapse_times)
+        _ = sidm.lensing_quantities()
+        _ = preset_model_from_name('SIDM_parametric')
+        self._test_default_infall_model(sidm, 'hybrid')
+
+        model = preset_model_from_name('SIDM_parametric_fixedbins')
+        realization = model(0.5, 1.5, 5.0, 1.0)
+        _ = realization.lensing_quantities()
 
     def test_ULDM(self):
 
@@ -48,6 +90,7 @@ class TestPresetModels(object):
         uldm = ULDM(0.5, 1.5, -21, flucs_shape=flucs_shape, flucs_args=flucs_args)
         _ = uldm.lensing_quantities()
         _ = preset_model_from_name('ULDM')
+        self._test_default_infall_model(uldm, 'hybrid')
 
     def test_SIDM_core_collapse(self):
         mass_ranges_subhalos = [[6, 8], [8, 10]]
@@ -58,18 +101,39 @@ class TestPresetModels(object):
         probabilities_subhalos, probabilities_field_halos)
         _ = sidm_cc.lensing_quantities()
         _ = preset_model_from_name('SIDM_core_collapse')
+        self._test_default_infall_model(sidm_cc, 'hybrid')
 
     def test_WDM_mixed(self):
         wdm_mixed = WDM_mixed(0.5, 1.5, 8.0, 0.5)
         _ = wdm_mixed.lensing_quantities()
         _ = preset_model_from_name('WDM_mixed')
+        self._test_default_infall_model(wdm_mixed, 'hybrid')
+
+    def test_CDM_blackholes(self):
+
+        model = preset_model_from_name('CDM_plus_BH')
+        cdm_bh = model(0.5,
+                             1.5,
+                             -0.2,
+                             -0.3,
+                             sigma_sub=0.01)
+        _ = cdm_bh.lensing_quantities()
+        _ = preset_model_from_name('CDM_plus_BH')
 
     def test_WDM_general(self):
         func = preset_model_from_name('WDMGeneral')
-        wdm = func(0.5, 1.5, 7.7, 2.0)
+        wdm = func(0.5, 1.5, 7.7, -2.0)
         _ = wdm.lensing_quantities()
-
-        wdm = func(0.5, 1.5, 7.7, 2.0, truncation_model_subhalos='TRUNCATION_GALACTICUS')
+        wdm = func(0.5, 1.5, 7.7, -2.0, truncation_model_subhalos='TRUNCATION_GALACTICUS')
+        self._test_default_infall_model(wdm, 'hybrid')
+        kwargs_globular_clusters = {'log10_mgc_mean': 5.0,
+                                    'log10_mgc_sigma': 0.5,
+                                    'rendering_radius_arcsec': 0.1,
+                                    }
+        wdm = func(0.5, 1.5, 7.7, -2.5,
+                  add_globular_clusters=True,
+                  kwargs_globular_clusters=kwargs_globular_clusters)
+        _ = wdm.lensing_quantities()
 
     def test_CDM_emulator(self):
 
@@ -199,8 +263,6 @@ class TestPresetModels(object):
             npt.assert_almost_equal(sh.params_physical[TNFWFromParams.KEY_RT],mock_data[util.PARAM_TNFW_RADIUS_TRUNCATION][n] * MPC_TO_KPC)
             npt.assert_almost_equal(sh.z,0.5)
             npt.assert_almost_equal(sh.z_infall,mock_data[util.PARAM_Z_LAST_ISOLATED][n])
-
-
 
 if __name__ == '__main__':
     pytest.main()

@@ -1,11 +1,11 @@
 import numpy
-from scipy.interpolate import interp1d
 from scipy.optimize import minimize
-from scipy.special import erfc
 from lenstronomy.Cosmo.nfw_param import NFWParam
 import astropy.units as un
 from colossus.lss.bias import twoHaloTerm
 from scipy.integrate import quad
+from pyHalo.Halos.accretion import InfallDistributionGalacticus2024, InfallDistributionHybrid
+
 
 class NFWParampyHalo(NFWParam):
 
@@ -22,10 +22,10 @@ class NFWParampyHalo(NFWParam):
         """
         return 2 * c ** 3 * self.rhoc_z(z) * 200 / (3 * numpy.log(1+c**2))
 
-
 class LensCosmo(object):
 
-    def __init__(self, z_lens=None, z_source=None, cosmology=None):
+    def __init__(self, z_lens=None, z_source=None, cosmology=None,
+                 infall_redshift_model='HYBRID_INFALL', kwargs_infall_model={'log_m_host': 13.0}):
         """
 
         This class performs calcuations relevant for certain halo mass profiles and lensing-related quantities for a
@@ -33,18 +33,18 @@ class LensCosmo(object):
         :param z_lens: deflector redshift
         :param z_source: source redshift
         :param cosmology: and instance of the Cosmology class (see pyhalo.Cosmology.cosmology.py)
+        :param infall_redshift_model: a string or class that determines subhalo infall times
+        :param kwargs_infall_model: keyword arguments for infall time model
         """
         if cosmology is None:
             from pyHalo.Cosmology.cosmology import Cosmology
             cosmology = Cosmology()
-
         self.cosmo = cosmology
         self._arcsec = 2 * numpy.pi / 360 / 3600
         self.h = self.cosmo.h
         # critical density of the universe in M_sun h^2 Mpc^-3
         rhoc = un.Quantity(self.cosmo.astropy.critical_density(0), unit=un.Msun / un.Mpc ** 3).value
         self.rhoc = rhoc / self.cosmo.h ** 2
-
         if z_lens is not None and z_source is not None:
             # critical density for lensing in units M_sun * Mpc ^ -2
             self.sigma_crit_lensing = self.get_sigma_crit_lensing(z_lens, z_source)
@@ -59,17 +59,47 @@ class LensCosmo(object):
         self._nfw_param = NFWParampyHalo(self.cosmo.astropy)
         self.z_lens = z_lens
         self.z_source = z_source
-        self._z_infall_pdf = InfallDistributionGalacticus2024(z_lens)
+        if infall_redshift_model is not None:
+            self.setup_infall_model(infall_redshift_model, kwargs_infall_model)
+        else:
+            self._infall_pdf_set = False
 
-    def z_accreted_from_zlens(self, mass, z_lens):
+    def setup_infall_model(self, infall_redshift_model, kwargs_infall_model):
+
+        self._infall_pdf_set = True
+        if infall_redshift_model == 'HYBRID_INFALL':
+            if 'm_host' in list(kwargs_infall_model.keys()):
+                kwargs_infall_model['log_m_host'] = numpy.log10(kwargs_infall_model['m_host'])
+                del kwargs_infall_model['m_host']
+            if 'log_m_host' not in list(kwargs_infall_model.keys()):
+                print('the HYBRID_INFALL model for subhalos requires m_host or log_m_host to be passed as'
+                      'keyword arguments through kwargs_infall_model. Using a default value of log_m_host = 13.0')
+                kwargs_infall_model['log_m_host'] = 13.0
+            self._z_infall_model = InfallDistributionHybrid(self.z_lens, kwargs_infall_model['log_m_host'])
+        elif infall_redshift_model == 'DIRECT_INFALL':
+            self._z_infall_model = InfallDistributionGalacticus2024(self.z_lens)
+        else:
+            try:
+                self._z_infall_model = infall_redshift_model(self.z_lens, **kwargs_infall_model)
+            except:
+                if isinstance(infall_redshift_model, str):
+                    raise Exception(infall_redshift_model + ' not a valid infall redshift model.')
+                else:
+                    raise Exception('infall_time_model must be either a class, or a string identifying a '
+                                    'particular model. Current options are HYBRID_INFALL and DIRECT_INFALL.')
+
+    def z_accreted_from_zlens(self, m_sub):
         """
         Returns the redshift a subhalo was accreted. Note that in the current implementation this is
         independent of infall mass
-        :param mass: subhalo mass at infall
+        :param m_sub: subhalo mass at infall
         :param z_lens: main deflector redshift
         :return: accretion redshift
         """
-        return self._z_infall_pdf.z_accreted_from_zlens(z_lens)
+        if self._infall_pdf_set:
+            return self._z_infall_model(m_sub)
+        else:
+            raise Exception('must set the infall redshift model before calculating accretion redshift')
 
     def two_halo_boost(self, m200, z, rmin=0.5, rmax=10):
 
@@ -129,11 +159,10 @@ class LensCosmo(object):
         :param rho0: central density normalization [M_sun / Mpc^3]
         :param Rs: scale radius [Mpc]
         :param z: redshift at which to evaluate angles from distances
-        :param pseudo_nfw: specifies whether one deals with a regualr NFW profile (False) or a psuedo-NFW profile
+        :param pseudo_nfw: specifies whether one deals with a regular NFW profile (False) or a psuedo-NFW profile
         with (1+x^2) in the denominator rather than (1+x)^2
         :return: scale radius and deflection angle at the scale radius in arcsec
         """
-
         dd = self.cosmo.D_A_z(z)
         Rs_angle = Rs / dd / self._arcsec  # Rs in arcsec
         if pseudo_nfw:
@@ -166,6 +195,8 @@ class LensCosmo(object):
         :param c: concentration
         :return: rho0 [Msun/Mpc^3], Rs [Mpc], r200 [Mpc]
         """
+        if pseudo_nfw is None:
+            raise Exception('psuedo_nfw must be specified in Halo class when accessing nfw parameters!')
         r200 = self._nfw_param.r200_M(m * self.h, z) / self.h  # physical radius r200
         if pseudo_nfw:
             rho0 = self._nfw_param.rho0_c_pseudoNFW(c, z) * self.h ** 2 # physical density in M_sun/Mpc**3
@@ -298,124 +329,47 @@ class LensCosmo(object):
         g = 4.3e-6
         return 0.5427 / numpy.sqrt(g*rho_average)
 
-class InfallDistributionGalacticus2024(object):
-    """ACCRETION REDSHIFT PDF FROM GALACTICUS USING THE VERSION OF GALACTICUS AS OF FEB 2024"""
+    def sidm_halo_effective_age(self, z, z_infall, lambda_t, zform=10.0):
+        """
+        Calculates a time since z = zform t_1 + t_2 where t_1 is the time from formation to infall, and t_2
+        is the time from infall to redshift z times lambda_t
+        :param z: halo redshift at the time of lensing
+        :param z_infall: infall redshift
+        :param lambda_t: rescales the passage of time since the halo becomes a subhalo
+        :param zform: formation redshift
+        :return: "age" in Gyr
+        """
+        if z_infall > 10:
+            z_infall = 10
+        time_formation_to_infall = self.cosmo.halo_age(z_infall, zform=zform)
+        time_infall_to_z = self.cosmo.halo_age(z, zform=z_infall)
+        return time_formation_to_infall + lambda_t * time_infall_to_z
 
-    def __init__(self, z_lens):
-        self.z_lens = z_lens
-        self._counts = numpy.array([ 74, 111, 138, 225, 281, 394, 396, 492, 603, 665, 626, 738, 714,
-        725, 744, 712, 679, 600, 556, 524, 478, 442, 347, 322, 283, 198,
-        189, 148, 137,  98,  77,  44,  32,  32,  26,  18,  15,   6,   5,
-        4,   0,   2,   0,   0])
-        self._z_infall = numpy.array([ 0.25,  0.75,  1.25,  1.75,  2.25,  2.75,  3.25,  3.75,  4.25,
-        4.75,  5.25,  5.75,  6.25,  6.75,  7.25,  7.75,  8.25,  8.75,
-        9.25,  9.75, 10.25, 10.75, 11.25, 11.75, 12.25, 12.75, 13.25,
-        13.75, 14.25, 14.75, 15.25, 15.75, 16.25, 16.75, 17.25, 17.75,
-        18.25, 18.75, 19.25, 19.75, 20.25, 20.75, 21.25, 21.75])
-        cdf = numpy.cumsum(self._counts)
-        self._cdf = cdf / numpy.max(cdf)
-        self._cdf_min = numpy.min(self._cdf)
-        self._cdf_max = numpy.max(self._cdf)
-        self._interp = interp1d(self._cdf, self._z_infall)
+    def sidm_collapse_timescale(self, rhos, rs, sigma_eff):
+        """
+        Calculate the SIDM timescale from NFW halo parameters and an effective cross section (Essig et al. 2019)
+        :param rhos: NFW halo density scale
+        :param rs: NFW halo scale radius
+        :param sigma_eff: an "effective" cross section
+        :return: timescale in Gyr
+        """
+        C = 0.75
+        G = 4.3e-6 # kpc/M (km/sec)^2
+        const1 = 2.0889e-10 # one cm^2 per gram in kpc^2 per M_sun
+        const2 = 1.05e-33 # kpc km^2 / s^2 / solar mass in kpc^3 / m_sun / s^2
+        denom = const1 * sigma_eff * rhos * rs * numpy.sqrt(4 * numpy.pi * G * rhos * const2)
+        tc_seconds = 150 / C / denom
+        tc_gyr = tc_seconds * 3.171e-17
+        return tc_gyr
 
-    def z_accreted_from_zlens(self, z_lens):
-        u = numpy.random.uniform(self._cdf_min, self._cdf_max)
-        z_infall = z_lens + self._interp(u)
-        return z_infall
-#
-# class InfallDistributionGalacticus2020(object):
-#     """ACCRETION REDSHIFT PDF FROM GALACTICUS USING THE VERSION OF GALACTICUS PUBLISHED IN 2020 WITH
-#     WARM DARK MATTER CHILLS OUT"""
-#     def __init__(self, z_lens):
-#         self.z_lens = z_lens
-#
-#     @property
-#     def _subhalo_accretion_pdfs(self):
-#
-#         if self._computed_zacc_pdf is False:
-#             self._computed_zacc_pdf = True
-#             self._mlist, self._dzvals, self._cdfs = self._Msub_cdfs(self.z_lens)
-#
-#         return self._mlist, self._dzvals, self._cdfs
-#
-#     def z_accreted_from_zlens(self, msub, zlens):
-#
-#         mlist, dzvals, cdfs = self._subhalo_accretion_pdfs
-#
-#         idx = self._mass_index(msub, mlist)
-#
-#         z_accreted = zlens + self._sample_cdf_single(cdfs[idx])
-#
-#         return z_accreted
-#
-#     def _cdf_numerical(self, m, z_lens, delta_z_values):
-#
-#         c_d_f = []
-#
-#         prob = 0
-#         for zi in delta_z_values:
-#             prob += self._P_fit_diff_M_sub(z_lens + zi, z_lens, m)
-#             c_d_f.append(prob)
-#         return numpy.array(c_d_f) / c_d_f[-1]
-#
-#     def _Msub_cdfs(self, z_lens):
-#
-#         M_sub_exp = numpy.arange(6.0, 10.2, 0.2)
-#         M_sub_list = 10 ** M_sub_exp
-#         delta_z = numpy.linspace(0., 6, 8000)
-#         funcs = []
-#
-#         for mi in M_sub_list:
-#             # cdfi = P_fit_diff_M_sub_cumulative(z_lens+delta_z, z_lens, mi)
-#             cdfi = self._cdf_numerical(mi, z_lens, delta_z)
-#
-#             funcs.append(interp1d(cdfi, delta_z))
-#
-#         return M_sub_list, delta_z, funcs
-#
-#     def z_decay_mass_dependence(self, M_sub):
-#         # Mass dependence of z_decay.
-#         a = 3.21509397
-#         b = 1.04659814e-03
-#
-#         return a - b * numpy.log(M_sub / 1.0e6) ** 3
-#
-#     def z_decay_exp_mass_dependence(self, M_sub):
-#         # Mass dependence of z_decay_exp.
-#
-#         a = 0.30335749
-#         b = 3.2777e-4
-#
-#         return a - b * numpy.log(M_sub / 1.0e6) ** 3
-#
-#     def _P_fit_diff_M_sub(self, z, z_lens, M_sub):
-#         # Given the redhsift of the lens, z_lens, and the subhalo mass, M_sub, return the
-#         # posibility that the subhlao has an accretion redhisft of z.
-#
-#         z_decay = self.z_decay_mass_dependence(M_sub)
-#         z_decay_exp = self.z_decay_exp_mass_dependence(M_sub)
-#
-#         normalization = 2.0 / numpy.sqrt(2.0 * numpy.pi) / z_decay \
-#                         / numpy.exp(0.5 * z_decay ** 2 * z_decay_exp ** 2) \
-#                         / erfc(z_decay * z_decay_exp / numpy.sqrt(2.0))
-#         return normalization * numpy.exp(-0.5 * ((z - z_lens) / z_decay) ** 2) \
-#                * numpy.exp(-z_decay_exp * (z - z_lens))
-#
-#     def _sample_cdf_single(self, cdf_interp):
-#
-#         u = numpy.random.uniform(0, 1)
-#
-#         try:
-#             output = float(cdf_interp(u))
-#             if numpy.isnan(output):
-#                 output = 0
-#
-#         except:
-#             output = 0
-#
-#         return output
-#
-#     def _mass_index(self, subhalo_mass, mass_array):
-#
-#         idx = numpy.argmin(numpy.absolute(subhalo_mass - mass_array))
-#         return idx
+    @staticmethod
+    def nfw_vmax(rhos, rs):
+        """
+        Calculate vmax for an NFW profile
+        :param rhos: density normalization [solar mass / kpc^3]
+        :param rs: scale radius [kpc]
+        :return: vmax [km/sec]
+        """
+        G = 4.3e-6 # kpc / solar mass * (km/sec)^2
+        vmax = 1.64 * numpy.sqrt(G * rhos * rs ** 2)
+        return vmax

@@ -6,10 +6,10 @@ from pyHalo.Halos.HaloModels.TNFW import TNFWFieldHalo, TNFWSubhalo
 from pyHalo.Halos.HaloModels.generalized_nfw import GeneralNFWFieldHalo, GeneralNFWSubhalo
 from pyHalo.Halos.HaloModels.powerlaw import PowerLawFieldHalo, PowerLawSubhalo
 from pyHalo.Halos.HaloModels.PsuedoJaffe import PJaffeSubhalo
-from pyHalo.Halos.HaloModels.PTMass import PTMass
+from pyHalo.Halos.HaloModels.blackhole import BlackHole
 from pyHalo.Halos.HaloModels.ULDM import ULDMFieldHalo, ULDMSubhalo
-from pyHalo.Halos.HaloModels.NFW_core_trunc import TNFWCFieldHaloSIDM, TNFWCSubhaloSIDM
-from pyHalo.Halos.HaloModels.gaussian import Gaussian
+from pyHalo.Halos.HaloModels.NFW_core_trunc import TNFWCHalo
+from pyHalo.Halos.HaloModels.gaussianhalo import GaussianHalo
 import numpy as np
 from copy import deepcopy
 
@@ -87,7 +87,7 @@ class Realization(object):
         The angular coordinate defines the center of the rendering volume, and halos will be distributed symmetrically around it.
         The value defaults to 0, but is overridden when the method shift_background_to_source is called
         :param rendering_center_y: same as rendering_center_x, but for the y angular coordinate
-        :param geometry: (optional, only relevant is subtract_exact_mass_sheets=True is specified in kwargs_realization)
+        :param geometry: (optional, only relevant if subtract_exact_mass_sheets=True is specified in kwargs_realization)
         an instance of Geometry (pyHalo.Cosmology.geometry) that defines the rendering volume
         """
 
@@ -104,7 +104,6 @@ class Realization(object):
         if halos is None:
             for mi, xi, yi, r3di, mdefi, zi, sub_flag in zip(masses, x, y, r3d,
                            mdefs, z, subhalo_flag):
-
                 unique_tag = np.random.rand()
                 model = self._load_halo_model(mi, xi, yi, r3di, mdefi, zi, sub_flag, self.lens_cosmo,
                                               kwargs_halo_model, unique_tag)
@@ -122,6 +121,30 @@ class Realization(object):
         self._rendering_center_x = rendering_center_x
         self._rendering_center_y = rendering_center_y
 
+    def filter_bound_mass(self, bound_mass_minimum):
+        """
+        This routine creates an instance of realization after removing halos/subhalos with attributes .bound_mass below
+        a certain threshold
+        :param realization: an instance of realization
+        :param bound_mass_minimum: the mass scale below which to discard halos
+        :return: a realization in which no subhalo has a bound mass less than bound_mass_minimum
+        """
+        halos_new = []
+        for halo in self.halos:
+            if halo.is_subhalo:
+                if halo.bound_mass >= bound_mass_minimum:
+                    halos_new.append(halo)
+            else:
+                halos_new.append(halo)
+        new_realization = Realization.from_halos(halos_new, self.lens_cosmo, self.kwargs_halo_model,
+                                  msheet_correction=self.apply_mass_sheet_correction,
+                                  rendering_classes=self.rendering_classes,
+                                  rendering_center_x=self.rendering_center[0],
+                                  rendering_center_y=self.rendering_center[1],
+                                  geometry=self.geometry)
+        new_realization._has_been_shifted = self._has_been_shifted
+        return new_realization
+
     @classmethod
     def from_halos(cls, halos, lens_cosmo, kwargs_halo_model, msheet_correction, rendering_classes,
                    rendering_center_x=None, rendering_center_y=None, geometry=None):
@@ -131,7 +154,7 @@ class Realization(object):
         :param halos: a list of halo class instances
         :param lens_cosmo: an instance of LensCosmo (see Halos.lens_cosmo)
         :param kwargs_halo_model: keyword arguments for the halo models
-        :param msheet_correction: whether or not to apply a mass sheet correction
+        :param msheet_correction: apply a mass sheet correction
         :param rendering_classes: a list of rendering classes
         :param rendering_center_x: an instance of scipy.interp1d that returns an angular position given a comoving distance.
         The angular coordinate defines the center of the rendering volume, and halos will be distributed symmetrically around it.
@@ -159,6 +182,39 @@ class Realization(object):
         distance.
         """
         return self._rendering_center_x, self._rendering_center_y
+
+    def filter_subhalos(self, aperture_radius_arcsec, log10_mass_minimum, x_coords, y_coords):
+        """
+        Remove subhalos if their mass is < log10_mass_minimum and they are greater than R_max arcsec from any
+        coordinate in x_coords/ycoords
+        :param aperture_radius_arcsec: aperture radius in arcseconds
+        :param log10_mass_minimum: log base 10 minimum halo mass
+        :param x_coords: list of x coordinates in arcsec
+        :param y_coords: listof y coordinates in arcsec
+        :return: a realization with the subhalos meeting the above selection cuts removed
+        """
+        halos = []
+        for halo in self.halos:
+            if halo.is_subhalo:
+                if halo.mass > 10 ** log10_mass_minimum:
+                    keep = True
+                else:
+                    for (xi, yi) in zip(x_coords, y_coords):
+                        dx = xi - halo.x
+                        dy = yi - halo.y
+                        dr = np.hypot(dx, dy)
+                        if dr < aperture_radius_arcsec:
+                            keep = True
+                            break
+                    else:
+                        keep = False
+            else:
+                keep = True
+            if keep:
+                halos.append(halo)
+        return Realization.from_halos(halos, self.lens_cosmo, self.kwargs_halo_model,
+                                      self.apply_mass_sheet_correction, self.rendering_classes,
+                                      self._rendering_center_x, self._rendering_center_y, self.geometry)
 
     def filter(self, aperture_radius_front,
                aperture_radius_back,
@@ -531,21 +587,29 @@ class Realization(object):
                 n += 1
         return n
 
-    def _mass_sheet_correction(self, rendering_classes, subtract_exact_sheets=False,
-                               kappa_scale=1.0, log_mlow_sheets=7.0, log_mhigh_sheets=10.0, zmin=None, zmax=None):
+    def _mass_sheet_correction(self, rendering_classes,
+                               subtract_exact_sheets=False,
+                               kappa_scale_subhalos=1.0,
+                               kappa_scale=1.0,
+                               log_mlow_sheets=7.0,
+                               log_mhigh_sheets=10.0,
+                               zmin=None, zmax=None):
 
         """
         This routine adds the negative mass sheet corrections along the LOS and in the main lens plane.
         The actual physics that determines the amount of negative convergence to add is encoded in the rendering_classes
         (see for example Rendering.Field.PowerLaw.powerlaw_base.py)
 
-        :param rendering_classes:
-        :param subtract_exact_sheets:
-        :param kappa_scale:
-        :param log_mlow_sheets:
-        :param log_mhigh_sheets:
-        :param zmin:
-        :param zmax:
+        :param rendering_classes: a list of rendering classes (see classes in pyHalo/Rendering/)
+        :param subtract_exact_sheets: bool; if True, will calculate the mass in each lens plane and subtract the
+        corresponding amount of convergence
+        :param kappa_scale_subhalos: scales the mass sheets added in the main lens plane
+        :param kappa_scale: rescales the amplitude negative mass convergence sheets
+        (specifying subtract_exact_sheets=True will cause this to have no effect)
+        :param log_mlow_sheets: sets the minimum halo mass to subtract mass
+        :param log_mhigh_sheets: sets the maximum halo mass to subtract mass
+        :param zmin: sets the lower limit in redshift
+        :param zmax: sets upper limit in redshift
         :return:
         """
         kwargs_mass_sheets_out = []
@@ -563,20 +627,20 @@ class Realization(object):
             profiles_out = ['CONVERGENCE'] * len(kwargs_mass_sheets_out)
 
         else:
-            for rendering_class in rendering_classes:
-
+            for i, rendering_class in enumerate(rendering_classes):
                 if rendering_class is None:
                     continue
-
-                kwargs_new, profiles_new, redshifts_new = \
-                    rendering_class.convergence_sheet_correction(kappa_scale, log_mlow_sheets,
-                                                                 log_mhigh_sheets, zmin, zmax)
-
+                elif rendering_class.name == 'SUBHALOS':
+                    kwargs_new, profiles_new, redshifts_new = rendering_class.convergence_sheet_correction(
+                        kappa_scale_subhalos, log_mlow_sheets, log_mhigh_sheets, zmin, zmax)
+                else:
+                    kwargs_new, profiles_new, redshifts_new = rendering_class.convergence_sheet_correction(
+                        kappa_scale, log_mlow_sheets, log_mhigh_sheets, zmin, zmax)
                 kwargs_mass_sheets_out += kwargs_new
                 redshifts_out += redshifts_new
                 profiles_out += profiles_new
 
-        # define the center of mass sheet to be the center of the rendering volume
+        # define the center of mass sheets to be the center of the rendering volume
         centerx_interp, centery_interp = self.rendering_center
         for i, (zi, profile_name) in enumerate(zip(redshifts_out, profiles_out)):
             di = self.lens_cosmo.cosmo.D_C_z(zi)
@@ -632,11 +696,11 @@ class Realization(object):
                 model = TNFWFieldHalo
         elif mdef == 'TNFWC_SIDM':
             if is_subhalo:
-                model = TNFWCSubhaloSIDM
+                model = TNFWCHalo
             else:
-                model = TNFWCFieldHaloSIDM
+                model = TNFWCHalo
         elif mdef == 'PT_MASS':
-            model = PTMass
+            model = BlackHole
         elif mdef == 'PJAFFE':
             model = PJaffeSubhalo
         elif mdef == 'ULDM':
@@ -645,7 +709,7 @@ class Realization(object):
             else:
                 model = ULDMFieldHalo
         elif mdef == 'GAUSSIAN_KAPPA':
-            model = Gaussian
+            model = GaussianHalo
         elif mdef == 'GNFW':
             if is_subhalo:
                 model = GeneralNFWSubhalo

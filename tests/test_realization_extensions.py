@@ -6,61 +6,160 @@ from scipy.interpolate import interp1d
 import numpy.testing as npt
 import numpy as np
 from pyHalo.Halos.concentration import ConcentrationDiemerJoyce
-from pyHalo.Halos.tidal_truncation import TruncationRoche, TruncationRN
+from pyHalo.Halos.tidal_truncation import TruncationRoche, TruncationRN, TruncationGalacticus
 from pyHalo.Halos.lens_cosmo import LensCosmo
-from scipy.special import eval_chebyt
-
+from pyHalo.PresetModels.cdm import CDM
+from lenstronomy.LensModel.Profiles.splcore import SPLCORE
+from lenstronomy.LensModel.lens_model import LensModel
 
 class TestRealizationExtensions(object):
 
+    def test_black_holes(self):
+
+        cdm = CDM(0.5, 2.0, sigma_sub=0.0, LOS_normalization=1.0)
+        ext = RealizationExtensions(cdm)
+        log10_m_ratio = 0.0
+        log10_f = np.log10(0.5)
+        mbh = ext.add_black_holes(log10_m_ratio,
+                                  log10_f,
+                                  log10_mlow_halos_subres=6.0)
+        for bh, nfw in zip(mbh.halos, cdm.halos):
+            npt.assert_almost_equal(bh.mass/2, nfw.mass)
+            npt.assert_almost_equal(bh.redshift, nfw.redshift)
+
+    def test_globular_clusters(self):
+
+        cdm = CDM(0.5, 2.0, sigma_sub=0.01, LOS_normalization=0.1)
+        n_halos_cdm = len(cdm.halos)
+        ext = RealizationExtensions(cdm)
+        log10_mgc_mean = 4.5
+        log10_mgc_sigma = 0.2
+        rendering_radius_arcsec = 10.0
+        gamma_mean = 2.0
+        gamma_sigma = 0.2
+        gc_concentration_mean = 50
+        gc_concentration_sigma = 20
+        gc_size_mean = 300
+        gc_size_sigma = 150
+        gc_surface_mass_density = 1e6
+        cdm_with_GCs = ext.add_globular_clusters(
+            log10_mgc_mean, log10_mgc_sigma, rendering_radius_arcsec, gamma_mean, gamma_sigma,
+            gc_concentration_mean, gc_concentration_sigma, gc_size_mean, gc_size_sigma, gc_surface_mass_density,
+            center_x=0, center_y=0
+        )
+        n_halos_cdm_plus_gcs = len(cdm_with_GCs.halos)
+        npt.assert_equal(n_halos_cdm_plus_gcs>n_halos_cdm, True)
+
+        cdm0 = CDM(0.5, 2.0, sigma_sub=0.0, LOS_normalization=0.0)
+        ext_onlygc = RealizationExtensions(cdm0)
+        gcs = ext_onlygc.add_globular_clusters(
+            log10_mgc_mean, log10_mgc_sigma, rendering_radius_arcsec, gamma_mean, gamma_sigma,
+            gc_concentration_mean, gc_concentration_sigma, gc_size_mean, gc_size_sigma, gc_surface_mass_density,
+            center_x=0, center_y=0
+        )
+        profile = SPLCORE()
+        kpc_per_arcsec = cdm0.lens_cosmo.cosmo.kpc_proper_per_asec(0.5)
+        sigma_crit_mpc = cdm0.lens_cosmo.get_sigma_crit_lensing(0.5, 2.0)
+        sigma_crit_arcsec = sigma_crit_mpc * (0.001 * kpc_per_arcsec) ** 2
+        mass_total = 0
+        for gc in gcs.halos:
+            profile_args = gc.profile_args
+            rho0 = profile_args[0]
+            R = profile_args[1]
+            gamma = profile_args[2]
+            rc = profile_args[3]
+            m_theory = profile.mass_3d(R, rho0, rc, gamma)
+            npt.assert_almost_equal(m_theory, gc.mass)
+            lenstronomy_params = gc.lenstronomy_params[0][0]
+            rho0_arcsec = lenstronomy_params['sigma0'] / lenstronomy_params['r_core']
+            R_arcsec = R / kpc_per_arcsec
+            gamma = lenstronomy_params['gamma']
+            rc_arcsec = lenstronomy_params['r_core']
+            m_theory = profile.mass_3d(R_arcsec, rho0_arcsec, rc_arcsec, gamma) * sigma_crit_arcsec
+            npt.assert_almost_equal(m_theory, gc.mass)
+            mass_total += m_theory
+
+        area = np.pi * (kpc_per_arcsec * rendering_radius_arcsec) ** 2
+        sigma = mass_total / area
+        npt.assert_almost_equal(sigma / gc_surface_mass_density, 1, 2)
+
     def test_toSIDM(self):
 
-        halo_mass = 10 ** 8
-        x = 0.5
-        y = 1.0
-        z = 0.5
-        zlens = 0.5
-        zsource = 2.0
-        astropy_instance = Cosmology().astropy
-        lens_cosmo = LensCosmo(zlens, zsource)
-        truncation_class = TruncationRN(lens_cosmo, 100.0)
-        concentration_class = ConcentrationDiemerJoyce(astropy_instance, scatter=False)
+        cdm = CDM(0.5, 1.5, sigma_sub=0.1, LOS_normalization=0., log_mlow=7.0)
+        ext = RealizationExtensions(cdm)
+        mass_bin_list = [[6, 10]]
+        log10_effective_sigma = [np.log10(1000)]
+        log10_subhalo_time_scaling = 0.0
+        sidm = ext.toSIDM_from_cross_section(mass_bin_list,
+                                             log10_effective_sigma,
+                                             log10_subhalo_time_scaling)
+        ratio_list = []
+        for cdm_halo, sidm_halo in zip(cdm.halos, sidm.halos):
 
-        class DummyCrossSection(object):
+            rs = cdm_halo.nfw_params[1]
+            kwargs_nfw = cdm_halo.lenstronomy_params[0]
+            kwargs_sidm = sidm_halo.lenstronomy_params[0]
+            npt.assert_equal(cdm_halo.c, sidm_halo.c)
+            for kw in kwargs_nfw:
+                kw['center_x'] = 0.0
+                kw['center_y'] = 0.0
+            for kw in kwargs_sidm:
+                kw['center_x'] = 0.0
+                kw['center_y'] = 0.0
 
-            def effective_cross_section(self, v):
-                return 100.0
+            _, rt_kpc = cdm_halo.profile_args
+            tau = rt_kpc / cdm_halo.nfw_params[1]
+            x = np.linspace(min(0.01 * tau, 0.01), cdm_halo.c, 5000)
+            r = x * rs
+            rho_nfw = cdm_halo.density_profile_3d_lenstronomy(r)
+            rho_sidm = sidm_halo.density_profile_3d_lenstronomy(r)
+            mass_nfw = np.trapz(4 * np.pi * r ** 2 * rho_nfw, r)
+            mass_sidm = np.trapz(4 * np.pi * r ** 2 * rho_sidm, r)
+            ratio = mass_sidm / mass_nfw
+            ratio_list.append(ratio)
+        # import matplotlib.pyplot as plt
+        # plt.hist(ratio_list,bins=50,range=(0.9,1.25))
+        # plt.show()
+        npt.assert_array_less(abs(np.median(ratio_list)-1), 0.05)
+        npt.assert_array_less(np.std(ratio_list), 0.1)
 
-        kwargs_halo_model = {'concentration_model': concentration_class,
-                             'truncation_model': truncation_class,
-                             'kwargs_density_profile': {'evaluate_mc_at_zlens': True}}
-        cross_section = DummyCrossSection()
-        mdef = 'TNFW'
-        single_halo = SingleHalo(halo_mass, x, y, mdef, z, zlens, zsource, subhalo_flag=False,
-                                 kwargs_halo_model=kwargs_halo_model)
-        ext = RealizationExtensions(single_halo)
-        single_halo_sidm_1 = ext.toSIDM(cross_section)
+        cdm = CDM(0.5, 1.5, sigma_sub=0.0, LOS_normalization=1., log_mlow=7.0)
+        ext = RealizationExtensions(cdm)
+        mass_bin_list = [[6, 10]]
+        log10_effective_sigma = [np.log10(1000)]
+        log10_subhalo_time_scaling = 0.0
+        sidm = ext.toSIDM_from_cross_section(mass_bin_list,
+                                             log10_effective_sigma,
+                                             log10_subhalo_time_scaling)
+        ratio_list = []
+        for cdm_halo, sidm_halo in zip(cdm.halos, sidm.halos):
 
-        single_subhalo = SingleHalo(halo_mass, x, y, mdef, z, zlens, zsource, subhalo_flag=True,
-                                 kwargs_halo_model=kwargs_halo_model)
-        ext = RealizationExtensions(single_subhalo)
-        single_subhalo_sidm_1 = ext.toSIDM(cross_section)
+            rs = cdm_halo.nfw_params[1]
+            kwargs_nfw = cdm_halo.lenstronomy_params[0]
+            kwargs_sidm = sidm_halo.lenstronomy_params[0]
+            npt.assert_equal(cdm_halo.c, sidm_halo.c)
+            for kw in kwargs_nfw:
+                kw['center_x'] = 0.0
+                kw['center_y'] = 0.0
+            for kw in kwargs_sidm:
+                kw['center_x'] = 0.0
+                kw['center_y'] = 0.0
 
-        mdef = 'TNFWC_SIDM'
-        kwargs_halo_model['kwargs_density_profile']['SIDM_CROSS_SECTION'] = cross_section
-        single_halo_sidm_2 = SingleHalo(halo_mass, x, y, mdef, z, zlens, zsource, subhalo_flag=False,
-                                 kwargs_halo_model=kwargs_halo_model)
-        single_subhalo_sidm_2 = SingleHalo(halo_mass, x, y, mdef, z, zlens, zsource, subhalo_flag=True,
-                                 kwargs_halo_model=kwargs_halo_model)
-        kwargs_lens_1 = single_halo_sidm_1.lensing_quantities(add_mass_sheet_correction=False)[2][0]
-        kwargs_lens_2 = single_halo_sidm_2.lensing_quantities(add_mass_sheet_correction=False)[2][0]
-
-        kwargs_lens_3 = single_subhalo_sidm_1.lensing_quantities(add_mass_sheet_correction=False)[2][0]
-        kwargs_lens_4 = single_subhalo_sidm_2.lensing_quantities(add_mass_sheet_correction=False)[2][0]
-
-        for kw in kwargs_lens_1.keys():
-            npt.assert_almost_equal(kwargs_lens_1[kw], kwargs_lens_2[kw])
-            npt.assert_almost_equal(kwargs_lens_4[kw], kwargs_lens_3[kw])
+            _, rt_kpc = cdm_halo.profile_args
+            tau = rt_kpc / cdm_halo.nfw_params[1]
+            x = np.linspace(min(0.01 * tau, 0.01), cdm_halo.c, 5000)
+            r = x * rs
+            rho_nfw = cdm_halo.density_profile_3d_lenstronomy(r)
+            rho_sidm = sidm_halo.density_profile_3d_lenstronomy(r)
+            mass_nfw = np.trapz(4 * np.pi * r ** 2 * rho_nfw, r)
+            mass_sidm = np.trapz(4 * np.pi * r ** 2 * rho_sidm, r)
+            ratio = mass_sidm / mass_nfw
+            ratio_list.append(ratio)
+        # import matplotlib.pyplot as plt
+        # plt.hist(ratio_list,bins=50,range=(0.9,1.25))
+        # plt.show()
+        npt.assert_array_less(abs(np.median(ratio_list) - 1), 0.05)
+        npt.assert_array_less(np.std(ratio_list), 0.05)
 
     def test_add_core_collapsed_halos(self):
 
@@ -373,20 +472,14 @@ class TestRealizationExtensions(object):
                                                          y_image_interp_list,
                                                          r_array)
 
-        # import matplotlib.pyplot as plt
-        # from pyHalo.single_realization import realization_at_z
-        # for j, zi in enumerate(zlist):
-        #     real = realization_at_z(pbh_realization, zi)[0]
-        #     plt.scatter(real.x, real.y)
-        #     plt.scatter(main_halo_coord_x[j], main_halo_coord_y[j], color='r')
-        #     plt.show()
-        #     a=input('continue')
-
         for i, halo in enumerate(pbh_realization.halos):
 
             condition1 = 'PT_MASS' == halo.mdef
             condition2 = 'TNFW' == halo.mdef
             npt.assert_equal(np.logical_or(condition1, condition2), True)
+
+if __name__ == '__main__':
+      pytest.main()
 
 # class TestCorrelationComputation(object):
 #
@@ -446,7 +539,7 @@ class TestRealizationExtensions(object):
 #         corr = np.ones((r.shape[0], mu.shape[0]))
 #         r, xi_0 = xi_l(0, corr, r, mu)
 #         npt.assert_almost_equal(xi_0_real, xi_0)
-# 
+#
 #     def test_xi_l_to_Pk_l(self):
 #         l = 0
 #         x = np.logspace(-3, 3, num=60, endpoint=False)
@@ -467,6 +560,5 @@ class TestRealizationExtensions(object):
 #         npt.assert_array_almost_equal(As, As_fit)
 #         npt.assert_array_almost_equal(n, n_fit)
 
+#
 
-if __name__ == '__main__':
-      pytest.main()

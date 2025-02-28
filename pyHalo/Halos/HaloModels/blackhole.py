@@ -1,12 +1,14 @@
 import numpy as np
 from pyHalo.Halos.halo_base import Halo
 
-class PTMass(Halo):
+class BlackHole(Halo):
     """
     Class that defines a point mass object in the lens model
     """
     def __init__(self, mass, x, y, r3d, z,
-                 sub_flag, lens_cosmo_instance, args, truncation_class, concentration_class, unique_tag):
+                 sub_flag, lens_cosmo_instance, args,
+                 truncation_class, concentration_class, unique_tag,
+                 fixed_position=True):
         """
         See documentation in base class (Halos/halo_base.py)
         """
@@ -14,8 +16,9 @@ class PTMass(Halo):
         self._truncation_class = truncation_class
         self._concentration_clss = concentration_class
         mdef = 'PT_MASS'
-        super(PTMass, self).__init__(mass, x, y, r3d, mdef, z, sub_flag,
-                                            lens_cosmo_instance, args, unique_tag)
+        super(BlackHole, self).__init__(mass, x, y, r3d, mdef, z, sub_flag,
+                                        lens_cosmo_instance, args, unique_tag,
+                                        fixed_position=fixed_position)
 
     @property
     def lenstronomy_ID(self):

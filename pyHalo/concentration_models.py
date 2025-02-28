@@ -1,6 +1,8 @@
-from pyHalo.Halos.concentration import *
+from pyHalo.Halos.concentration import ConcentrationLudlow, ConcentrationDiemerJoyce, \
+    ConcentrationPeakHeight, ConcentrationWDMHyperbolic, ConcentrationWDMPolynomial, ConcentrationLudlowWDM, ConcentrationConstant
 from copy import deepcopy
 import numpy as np
+
 
 def preset_concentration_models(model_name, kwargs_model=None):
     """
@@ -13,9 +15,10 @@ def preset_concentration_models(model_name, kwargs_model=None):
         kwargs_model_return = {}
     else:
         kwargs_model_return = deepcopy(kwargs_model)
-
     if model_name == 'DIEMERJOYCE19':
         return ConcentrationDiemerJoyce, kwargs_model_return
+    elif model_name == 'LUDLOW2016':
+        return ConcentrationLudlow, kwargs_model_return
     elif model_name == 'PEAK_HEIGHT_POWERLAW':
         return ConcentrationPeakHeight, kwargs_model_return
     elif model_name == 'WDM_HYPERBOLIC':
@@ -29,7 +32,16 @@ def preset_concentration_models(model_name, kwargs_model=None):
         kwargs_model_return['c_scale'] = 60.0
         kwargs_model_return['c_power'] = -0.17
         kwargs_model_return['c_power_inner'] = 1.0
-        kwargs_model_return['mc_suppression_redshift_evolution'] = True
+        kwargs_model_return['mc_suppression_redshift_evolution'] = False
+        return ConcentrationWDMPolynomial, kwargs_model_return
+    elif model_name == 'BOSE2016_LUDLOW':
+        # https://ui.adsabs.harvard.edu/abs/2016MNRAS.455..318B/abstract
+        kwargs_model_return['concentration_cdm_class'] = ConcentrationLudlow
+        kwargs_model_return['kwargs_cdm'] = {}
+        kwargs_model_return['c_scale'] = 60.0
+        kwargs_model_return['c_power'] = -0.17
+        kwargs_model_return['c_power_inner'] = 1.0
+        kwargs_model_return['mc_suppression_redshift_evolution'] = False
         return ConcentrationWDMPolynomial, kwargs_model_return
     elif model_name == 'LAROCHE2022':
         # https://ui.adsabs.harvard.edu/abs/2022MNRAS.517.1867L/abstract
@@ -40,6 +52,8 @@ def preset_concentration_models(model_name, kwargs_model=None):
         kwargs_model_return['c_power'] = -0.42
         kwargs_model_return['c_power_inner'] = 1.62
         return ConcentrationWDMPolynomial, kwargs_model_return
+    elif model_name == 'LUDLOW_WDM':
+        return ConcentrationLudlowWDM, kwargs_model_return
     elif model_name == 'FROM_FORMATION_HISTORY':
         norm, slope = 0.75, 0.4
         a = norm * (0.7 / kwargs_model['dlogT_dlogk']) ** slope
@@ -56,5 +70,7 @@ def preset_concentration_models(model_name, kwargs_model=None):
         custom_mc_relation_class = kwargs_model_return['custom_class']
         del kwargs_model_return['custom_class']
         return custom_mc_relation_class, kwargs_model_return
+    elif model_name == 'CONSTANT':
+        return ConcentrationConstant, kwargs_model_return
     else:
         raise Exception('model name '+str(model_name)+' not recognized')

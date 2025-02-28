@@ -4,7 +4,7 @@ from scipy.interpolate import interp1d
 from pyHalo.Cosmology.cosmology import Cosmology
 from scipy.integrate import quad
 from pyHalo.Halos.lens_cosmo import LensCosmo
-from scipy.integrate import simps
+from scipy.integrate import simpson as simps
 from pyHalo.concentration_models import preset_concentration_models
 from lenstronomy.LensModel.lens_model import LensModel
 
@@ -203,7 +203,7 @@ def compute_comoving_ray_path(x_coordinate, y_coordinate, lens_model, kwargs_len
         alpha_x_start, alpha_y_start = x_coordinate, y_coordinate
         for zi in all_redshifts_sorted:
 
-            x_start, y_start, alpha_x_start, alpha_y_start = lens_model.lens_model.ray_shooting_partial(x_start, y_start,
+            x_start, y_start, alpha_x_start, alpha_y_start = lens_model.lens_model.ray_shooting_partial_comoving(x_start, y_start,
                                                                                 alpha_x_start, alpha_y_start,
                                                                                 z_start, zi, kwargs_lens)
             d = float(comoving_distance_calc(zi))

@@ -1,17 +1,22 @@
 import numpy as np
-from pyHalo.Halos.HaloModels.powerlaw import PowerLawSubhalo, PowerLawFieldHalo
+from pyHalo.Halos.HaloModels.powerlaw import PowerLawSubhalo, PowerLawFieldHalo, GlobularCluster
 from pyHalo.Halos.HaloModels.generalized_nfw import GeneralNFWSubhalo, GeneralNFWFieldHalo
 from pyHalo.single_realization import Realization
-from pyHalo.Halos.HaloModels.gaussian import Gaussian
+from pyHalo.Halos.HaloModels.gaussianhalo import GaussianHalo
+from pyHalo.Halos.HaloModels.blackhole import BlackHole
+from pyHalo.Rendering.MassFunctions.density_peaks import ShethTormen
 from pyHalo.Rendering.correlated_structure import CorrelatedStructure
 from pyHalo.Rendering.MassFunctions.delta_function import DeltaFunction
+from pyHalo.Rendering.MassFunctions.gaussian import Gaussian
 from pyHalo.Cosmology.geometry import Geometry
 from pyHalo.utilities import generate_lens_plane_redshifts, mask_annular
-from pyHalo.Rendering.SpatialDistributions.uniform import Uniform
+from pyHalo.Rendering.SpatialDistributions.uniform import Uniform, LensConeUniform
+from pyHalo.Halos.tidal_truncation import Multiple_RS
+from pyHalo.Halos.concentration import ConcentrationConstant
 from copy import deepcopy
 from scipy.interpolate import RectBivariateSpline
 import time
-from scipy.integrate import simps
+from scipy.integrate import simpson as simps
 from scipy.special import eval_chebyt
 from scipy.optimize import curve_fit
 from mcfit import Hankel
@@ -32,41 +37,299 @@ class RealizationExtensions(object):
 
         self._realization = realization
 
-    def toSIDM(self, cross_section):
+    def add_prompt_cusps(self, a=0.04, b=-0.8, c=0.15):
         """
 
-        :param cross_section: a class with a method effective_cross_section(v) that takes as input a velocity scale
-        equal to 0.64 * v_max and returns an effective cross section in units cm^2 / gram
-        :return: a realization where all halos aree transformed into SIDM halos using the parameteric model by
-        Yang et al. (2023) (https://arxiv.org/pdf/2305.16176.pdf)
+        :param a: normalization of cusp mass / halo mass relation
+        :param b: exponent of cusp mass / halo mass relation
+        :param c: scatter of relation in dex
+        :return: an instance of Realization with prompt cusps added
         """
-
-        from pyHalo.Halos.HaloModels.NFW_core_trunc import TNFWCFieldHaloSIDM, TNFWCSubhaloSIDM
-        sidm_halos = []
-        kwargs_profile = {'SIDM_CROSS_SECTION': cross_section}
+        from pyHalo.Halos.HaloModels.prompt_cusp import PrompCusp
+        halo_list = []
         for halo in self._realization.halos:
-            if halo.is_subhalo:
-                new_halo = TNFWCSubhaloSIDM(halo.mass, halo.x, halo.y, halo.r3d, halo.z, False,
-                                              halo.lens_cosmo, kwargs_profile,
-                                              halo._truncation_class, halo._concentration_class,
-                                              halo.unique_tag)
-                new_halo._rperi_units_r200 = halo.rperi_units_r200
-                new_halo._time_since_infall = halo.time_since_infall
+            _ = halo.profile_args # need to set this before doing anything else
+            cuspM_haloM_median = a * (halo.mass / 10 ** 7.25) ** b
+            log10_cuspM_haloM_median = np.log10(cuspM_haloM_median)
+            if c == 0:
+                scatter = 0.0
+            elif c > 0:
+                scatter = np.random.normal(0, c)
             else:
-                new_halo = TNFWCFieldHaloSIDM(halo.mass, halo.x, halo.y, halo.r3d, halo.z, False,
-                                              halo.lens_cosmo, kwargs_profile,
-                                              halo._truncation_class, halo._concentration_class,
-                                              halo.unique_tag)
-            new_halo._c = halo.c
-            new_halo._zeval = halo.z_eval
-            new_halo._halo_age = halo.halo_age
-            sidm_halos.append(new_halo)
+                raise Exception('scatter must be > 0!')
+            log10_cuspM_over_haloM = log10_cuspM_haloM_median + scatter
+            cuspM_over_haloM = 10 ** log10_cuspM_over_haloM
+            cuspM = halo.mass * cuspM_over_haloM
+            rescale_norm = 1 - cuspM_over_haloM
+            log10_cuspA = 1.2 * log10_cuspM_haloM_median/(-3.5) + 10.25 # in Mpc^-1.5
+            cuspA = 10 ** log10_cuspA
+            R = (3 * cuspM / (8 * np.pi * cuspA)) ** (2/3) # in mpc
+            args = {'cusp_A': cuspA, 'cusp_R': R}
+            prompt_cusp = PrompCusp(halo.mass, halo.x, halo.y, halo.r3d,
+                                    halo.z, halo.is_subhalo, halo.lens_cosmo,
+                                    args, halo._truncation_class, halo._concentration_class,
+                                    halo.unique_tag)
+            if halo.is_subhalo:
+                prompt_cusp.set_bound_mass(halo.bound_mass)
+            halo._rescale_norm *= rescale_norm
+            halo_list.append(halo)
+            halo_list.append(prompt_cusp)
 
-        new_realization = Realization.from_halos(sidm_halos, self._realization.lens_cosmo, self._realization.kwargs_halo_model,
+        realization = Realization.from_halos(halo_list, self._realization.lens_cosmo,
+                               self._realization.kwargs_halo_model,
                                self._realization.apply_mass_sheet_correction,
                                self._realization.rendering_classes,
-                               self._realization._rendering_center_x, self._realization._rendering_center_y,
+                               self._realization._rendering_center_x,
+                               self._realization._rendering_center_y,
                                self._realization.geometry)
+        return realization
+
+    def add_black_holes(self, log10_mass_ratio,
+                        f,
+                        log10_mlow_halos_subres=5.0,
+                        log10_min_mbh=4.5,
+                        log_mlow_halos=6.0,
+                        log10_mass_maximum=6.7,
+                        LOS_normalization=1.0):
+        """
+        Add a population of black holes in the center of halos
+        :param log10_mass_ratio: the ratio of the black hole to the mass of the host halo
+        :param f: the fraction of halos with a bh seed
+        :param log10_mlow_halos_subres: the minimum halo mass in which to inject BH seeds; this should be lower than the
+        minimum halo mass used to create the realization (log_mlow_halos)
+        :param log10_min_mbh: the minimum bh mass rendered
+        :param log_mlow_halos: the minimum halo mass of explicitely rendered halos in the realization
+        :param log10_mass_maximum: the maximum mass of the BH seeds
+        :param LOS_normalization: the overal normalization of the LOS halo mass function relative to Sheth Tormen
+        :return: a population of black holes
+        """
+        # first we inject seeds into rendered halos (down to log10_minimum_halo_mass)
+        black_hole_list = []
+        for halo in self._realization.halos:
+            u = np.random.rand()
+            if u > f:
+                # no BH in this halo
+                continue
+            kpc_per_arcsec = self._realization.lens_cosmo.cosmo.kpc_proper_per_asec(halo.z)
+            x_center_halo, y_center_halo = halo.x, halo.y
+            m_bh = min(10**log10_mass_maximum, halo.mass * 10 ** log10_mass_ratio)
+            halo_scale_radius_arcsec = halo.nfw_params[1] / kpc_per_arcsec
+            theta = np.random.uniform(0, 2*np.pi)
+            costheta, sintheta = np.cos(theta), np.sin(theta)
+            R = np.sqrt(np.random.uniform(0, halo_scale_radius_arcsec ** 2))
+            x_bh, y_bh = x_center_halo + R * costheta, y_center_halo + R * sintheta
+            if m_bh > 10**log10_min_mbh:
+                mbh = BlackHole(m_bh,
+                               x_bh,
+                               y_bh,
+                               r3d=None,
+                               z=halo.z,
+                               sub_flag=False,
+                               lens_cosmo_instance=halo.lens_cosmo,
+                               args={},
+                               truncation_class=None,
+                               concentration_class=None,
+                               unique_tag=np.random.rand(),
+                               fixed_position=False)
+                black_hole_list.append(mbh)
+
+        plane_redshifts = self._realization.unique_redshifts
+        delta_z = []
+        for i, zi in enumerate(plane_redshifts[0:-1]):
+            delta_z.append(plane_redshifts[i + 1] - plane_redshifts[i])
+        delta_z.append(self._realization.lens_cosmo.z_source - plane_redshifts[-1])
+
+        for (zi, delta_zi) in zip(plane_redshifts, delta_z):
+            kwargs_model_subres = {'m_pivot': 10 ** 8,
+                               'log_mlow': log10_mlow_halos_subres,
+                               'log_mhigh': log_mlow_halos,
+                               'LOS_normalization': f * LOS_normalization,
+                               'delta_power_law_index': 0.0,
+                               'draw_poisson': True}
+            mfunc_sub_resolution = ShethTormen.from_redshift(zi, delta_zi,
+                                                             self._realization.geometry,
+                                                             kwargs_model_subres)
+            mass_sub_resolution = mfunc_sub_resolution.draw()
+            uniform_spatial_distribution = LensConeUniform(self._realization.geometry.cone_opening_angle,
+                                                           self._realization.geometry)
+            x_kpc, y_kpc = uniform_spatial_distribution.draw(len(mass_sub_resolution),
+                                                             zi)
+            kpc_per_arcsec = self._realization.lens_cosmo.cosmo.kpc_proper_per_asec(zi)
+            x = x_kpc / kpc_per_arcsec
+            y = y_kpc / kpc_per_arcsec
+            for m_bh, x_bh, y_bh in zip(mass_sub_resolution, x, y):
+                if m_bh > 10 ** log10_min_mbh:
+                    mbh = BlackHole(m_bh * 10 ** log10_mass_ratio,
+                                    x_bh,
+                                    y_bh,
+                                    r3d=None,
+                                    z=zi,
+                                    sub_flag=False,
+                                    lens_cosmo_instance=self._realization.lens_cosmo,
+                                    args={},
+                                    truncation_class=None,
+                                    concentration_class=None,
+                                    unique_tag=np.random.rand(),
+                                    fixed_position=False)
+                    black_hole_list.append(mbh)
+
+        mbh_realization = Realization.from_halos(black_hole_list, self._realization.lens_cosmo,
+                                   self._realization.kwargs_halo_model,
+                                   self._realization.apply_mass_sheet_correction,
+                                   self._realization.rendering_classes,
+                                   self._realization._rendering_center_x,
+                                   self._realization._rendering_center_y,
+                                   self._realization.geometry)
+        return mbh_realization
+
+    def add_globular_clusters(self, log10_mgc_mean, log10_mgc_sigma, rendering_radius_arcsec, gamma_mean=2.5,
+                              gamma_sigma=0.25, gc_concentration_mean=90, gc_concentration_sigma=20,
+                              gc_size_mean=100, gc_size_sigma=10, gc_surface_mass_density=10 ** 5.3,
+                              center_x=0, center_y=0):
+        """
+        Add globular clusters at main deflector redshift following a log-normal mass distribution
+        :param log10_mgc_mean: the median log10(mass) of the GC's
+        :param log10_mgc_sigma: the standard deviation of the Gaussian mass function for log10(m)
+        :param rendering_radius_arcsec [arcsec]: sets the area around (center_x, center_y) where the GC's appear; GC's are
+        distributed uniformly in a circle centered at (center_x, center_y) with this radius
+        :param gamma_mean: the mean logarithmic power-law slope for the GCs
+        :param gamma_sigma: half the width of the slope distribution around gamma mean, assuming a uniform distribution
+        :param gc_concentration_mean: the ratio of the GC core size to the total size, where the total size is defined as
+        the radius enclosing the stated mass of the GC
+        :param gc_concentration_sigma: half the width of the distribution around gc_concentration_mean
+        :param gc_size_mean: the typical radial extend of the GC in light years
+        (the mass is defined as the mass inside this radius)
+        :param gc_size_sigma: half the width of the uniform distribution of gc size
+        :param gc_surface_mass_density: the surface mass density of GCs in units of M_sun / kpc^2
+        :param center_x: center of rendering area in arcsec
+        :param center_y: center of rendering area in arcsec
+        :return: an instance of Realization that includes the GC's
+        """
+        if isinstance(center_x, int) or isinstance(center_x, float):
+            center_x = [center_x]
+            center_y = [center_y]
+        assert len(center_x) == len(center_y)
+        GC_realization = None
+        lens_cosmo = self._realization.lens_cosmo
+        z = self._realization.lens_cosmo.z_lens
+        kpc_per_arcsec = self._realization.lens_cosmo.cosmo.kpc_proper_per_asec(z)
+        # determine number of GCs
+        integral = np.exp(np.log(10 ** log10_mgc_mean) + np.log(10 ** log10_mgc_sigma) ** 2 / 2)
+        mass_in_gc = np.pi * gc_surface_mass_density * (rendering_radius_arcsec * kpc_per_arcsec) ** 2
+        n = int(mass_in_gc / integral)
+        mfunc = Gaussian(n, log10_mgc_mean, log10_mgc_sigma)
+        for x_center, y_center in zip(center_x, center_y):
+            m = mfunc.draw()
+            uniform_spatial_distribution = Uniform(rendering_radius_arcsec, self._realization.geometry)
+            x_kpc, y_kpc = uniform_spatial_distribution.draw(len(m), z, 1.0, x_center, y_center)
+            x = x_kpc / self._realization.lens_cosmo.cosmo.kpc_proper_per_asec(z)
+            y = y_kpc / self._realization.lens_cosmo.cosmo.kpc_proper_per_asec(z)
+            GCS = []
+            for (m_gc, x_center_gc, y_center_gc) in zip(m, x, y):
+                gamma = np.random.uniform(gamma_mean - gamma_sigma, gamma_mean + gamma_sigma)
+                gc_concentration = np.random.uniform(gc_concentration_mean - gc_concentration_sigma,
+                                                     gc_concentration_mean + gc_concentration_sigma)
+                gc_size = np.random.uniform(gc_size_mean - gc_size_sigma, gc_size_mean + gc_size_sigma)
+                gc_size_lightyear = gc_size * (m_gc / 10 ** 5) ** (1/3)
+                gc_profile_args = {'gamma': gamma,
+                                   'gc_size_lightyear': gc_size_lightyear,
+                                   'gc_concentration': gc_concentration}
+                unique_tag = np.random.rand()
+                profile = GlobularCluster(m_gc, x_center_gc, y_center_gc, lens_cosmo.z_lens, lens_cosmo,
+                                          gc_profile_args, unique_tag)
+                GCS.append(profile)
+            gcs_realization = Realization.from_halos(GCS, self._realization.lens_cosmo,
+                                                     self._realization.kwargs_halo_model,
+                                                     self._realization.apply_mass_sheet_correction,
+                                                     self._realization.rendering_classes,
+                                                     self._realization._rendering_center_x,
+                                                     self._realization._rendering_center_y,
+                                                     self._realization.geometry)
+            if GC_realization is None:
+                GC_realization = gcs_realization
+            else:
+                GC_realization = GC_realization.join(gcs_realization)
+        # print('added '+str(len(GC_realization.halos))+' globular clusters... ')
+        new_realization = self._realization.join(GC_realization)
+        return new_realization
+
+    def toSIDM_single_halo(self, halo, t_c, subhalo_evolution_scaling, t_over_tc_cut=0.15):
+        """
+        Transform a single NFW profile into a cored or core-collapsed SIDM profile
+        :param halo: an instance of a Halo class for the CDM profile
+        :param t_c: the collapse timescale in Gyr
+        :param subhalo_evolution_scaling: rescales the core collapse timescale for subhalos
+        :param rescale_normalization: rescales the overall normalization of the sidm profile relative to CDM profile
+        :return: the Halo class transformed to an SIDM profile
+        """
+        from pyHalo.Halos.HaloModels.NFW_core_trunc import TNFWCHalo, Hybrid
+        _, rt_kpc = halo.profile_args
+        kwargs_profile = {'sidm_timescale': t_c}
+        tau = rt_kpc / halo.nfw_params[1]
+        truncation_class = Multiple_RS(self._realization.lens_cosmo, tau)
+        concentration_class = ConcentrationConstant(None, halo.c)
+        if halo.is_subhalo:
+            subhalo_flag = True
+            kwargs_profile['lambda_t'] = subhalo_evolution_scaling
+        else:
+            subhalo_flag = False
+            kwargs_profile['lambda_t'] = 1.0
+        kwargs_profile['mass_conservation'] = halo.mass_3d('r200')
+        new_halo = TNFWCHalo(halo.mass, halo.x, halo.y, halo.r3d, halo.z, subhalo_flag,
+                                      halo.lens_cosmo, kwargs_profile,
+                                      truncation_class,
+                                      concentration_class,
+                                      halo.unique_tag)
+
+        if new_halo.is_subhalo:
+            new_halo.set_bound_mass(halo.bound_mass)
+        _ = new_halo.profile_args
+        if new_halo.t_over_tc < t_over_tc_cut:
+            # make a Hybrid profile; when rescale=1 NFW halo goes away
+            rescale = new_halo.t_over_tc / t_over_tc_cut
+            sidm_halo = Hybrid(halo, new_halo, rescale)
+            if subhalo_flag:
+                sidm_halo.set_bound_mass(halo.bound_mass)
+            return sidm_halo
+        else:
+            return new_halo
+
+    def toSIDM_from_cross_section(self, mass_bin_list,
+                                  log10_effective_cross_section_list,
+                                  log10_subhalo_time_scaling):
+        """
+        This takes a CDM relization and transforms it into an SIDM realization. The density profile follows
+        https://arxiv.org/pdf/2305.16176.pdf if t / t_c <= 1. For t / t_c > 1 we extrapolate to deeper core collapse.
+        Here, t_c is the core collapse timescale (Essig et al. 2019), as calculated in LensCosmo class.
+        :param mass_bin_list: a list of mass ranges in log10 e.g. [[6, 8], [8, 10]]
+        :param log10_effective_cross_section_list: a list of effective cross sections in each mass range given in log10(cm^2 / gram)
+        :param log10_subhalo_time_scaling: rescales the collpse timescale for subhalos relative to field halos
+        :param set_bound_mass: bool; set the bound mass of SIDM profiles to match the CDM profiles
+        :return: a realization of SIDM halos created from the population of CDM halos
+        :return: a realization of SIDM halos created from the population of CDM halos
+        """
+        sidm_halos = []
+        for halo in self._realization.halos:
+            for bin_index, mass_bin in enumerate(mass_bin_list):
+                if np.log10(halo.mass) >= mass_bin[0] and np.log10(halo.mass) < mass_bin[1]:
+                    sigma_eff = 10 ** log10_effective_cross_section_list[bin_index]
+                    break
+            else:
+                raise Exception('halo mass ' + str(np.log10(halo.mass)) + ' not inside the minimum/maximum mass ranges')
+            rhos, rs, _ = halo.nfw_params
+            t_c = self._realization.lens_cosmo.sidm_collapse_timescale(rhos, rs, sigma_eff)
+            new_halo = self.toSIDM_single_halo(halo,
+                                               t_c,
+                                               10**log10_subhalo_time_scaling)
+            sidm_halos.append(new_halo)
+
+        new_realization = Realization.from_halos(sidm_halos, self._realization.lens_cosmo,
+                                                 self._realization.kwargs_halo_model,
+                                                 self._realization.apply_mass_sheet_correction,
+                                                 self._realization.rendering_classes,
+                                                 self._realization._rendering_center_x,
+                                                 self._realization._rendering_center_y,
+                                                 self._realization.geometry)
         new_realization._has_been_shifted = self._realization._has_been_shifted
         return new_realization
 
@@ -133,13 +396,16 @@ class RealizationExtensions(object):
     def add_core_collapsed_halos(self, indexes, halo_profile='SPL_CORE',**kwargs_halo):
 
         """
-        This function turns NFW halos in a realization into profiles modeled as PseudoJaffe profiles
-        with 1/r^2 central density profiles with the same total mass as the original NFW
-        profile.
+        This function turns NFW halos into profiles that are meant to represent core-collapsed SIDM halos. The halo
+        profile can be specified through either SPL_CORE or GNFW, see the SIDM example notebooks for detials
 
         :param indexes: the indexes of halos in the realization to transform into powerlaw or generalized nfw profiles
         :param halo_profile: specifies whether to transform to powerlaw (SPL_CORE) or generalized_nfw profile (GNFW)
         :param kwargs_halo: the keyword arguments for the collapsed halo profile
+        For SPL_CORE: should include 'log_slope_halo' and 'x_core_halo', the log profile slope and core size in units of
+        NFW r_s
+        For GNFW: should include 'gamma_inner' and 'gamma_outer', the logarithmic profile slopes interior to and exterior
+        to NFW r_s
         :return: A new instance of Realization where the halos indexed by indexes
         in the original realization have their mass definitions changed to PsuedoJaffe
         """
@@ -496,14 +762,14 @@ def _get_fluctuation_halos(realization, fluctuation_amplitude, fluctuation_size,
 
     args_fluc=[{'amp': amps[i], 'sigma': sigs[i], 'center_x': xs[i], 'center_y': ys[i]} for i in range(len(amps))]
     masses = np.absolute(amps)
-    fluctuations = [Gaussian(masses[i], xs[i], ys[i], None, realization.lens_cosmo.z_lens,
-                             True, realization.lens_cosmo, args_fluc[i],
-                             truncation_class=None, concentration_class=None,
-                             unique_tag=np.random.rand()) for i in range(len(amps))]
+    fluctuations = [GaussianHalo(masses[i], xs[i], ys[i], None, realization.lens_cosmo.z_lens,
+                                 True, realization.lens_cosmo, args_fluc[i],
+                                 truncation_class=None, concentration_class=None,
+                                 unique_tag=np.random.rand()) for i in range(len(amps))]
 
     return fluctuations
 
-def corr_kappa_with_mask(kappa_map, map_size, r, mu, apply_mask=True, r_min=0.5, r_max=1.5, normalization=False): 
+def corr_kappa_with_mask(kappa_map, map_size, r, mu, apply_mask=True, r_min=0.5, r_max=1.5, normalization=False):
 
     """
     This function computes the two-point correlation function from a convergence map.
@@ -515,7 +781,7 @@ def corr_kappa_with_mask(kappa_map, map_size, r, mu, apply_mask=True, r_min=0.5,
             of the angles between 0 and 180 degrees.
     :param apply_mask: if True, apply the mask on the convergence map.
     :param r_min: inner radius of mask in units of grid coordinates
-    :param r_max: outer radius of mask in units of grid coordinates. If r_max = None, the size of the convergence map's outside 
+    :param r_max: outer radius of mask in units of grid coordinates. If r_max = None, the size of the convergence map's outside
             boundary becomes the mask's outer boundary.
     :param normalization: if True, apply normalization to the correlation function.
     :return: the two-point correlation function on the (mu, r) coordinate grid.
@@ -553,7 +819,7 @@ def corr_kappa_with_mask(kappa_map, map_size, r, mu, apply_mask=True, r_min=0.5,
         mask_interp = RectBivariateSpline(X_, Y_, mask, kx=1, ky=1, s=0)
     else:
         mask = np.ones(XX_.shape)
-        
+
     kappa_interp = RectBivariateSpline(X_, Y_, kappa_map, kx=5, ky=5, s=0)
 
     corr = np.zeros((r.shape[0], mu.shape[0]))

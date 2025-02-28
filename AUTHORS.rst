@@ -5,9 +5,13 @@ Credits
 Development Lead
 ----------------
 
-* Daniel Gilman <gilmanda@ucla.edu>
+* Daniel Gilman <gilmanda@uchicago.edu>
 
 Contributors
 ------------
 
-None yet. Why not be the first?
+* Veronica Dike <vdike2@illinois.edu>
+* Birendra Dhanasingham <birendradh@unm.edu>
+* Charles Gannon <cgannon@ucmerced.edu>
+* Alex Laroche <alexander.laroche@mail.mcgill.ca>
+

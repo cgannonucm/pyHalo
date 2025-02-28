@@ -13,6 +13,8 @@ _log10_rpericenter_sampling = ITSampling(_log10_rperi_bins, _cdf)
 
 class Halo(ABC):
 
+    # this should be set inside the individual halo classes that access NFW parameters
+    _pseudo_nfw = None
     def __init__(self, mass=None, x=None, y=None, r3d=None, mdef=None, z=None,
                  sub_flag=None, lens_cosmo_instance=None, args={}, unique_tag=None, fixed_position=False):
 
@@ -31,7 +33,7 @@ class Halo(ABC):
         :param lens_cosmo_instance: an instance of LensCosmo
         :param args: keyword arguments that include default settings for the halo
         :param unique_tag: a random number with 16 decimal places that uniquely identifies each halo
-        :param fixed_position: determiens whether halos can be moved around when aligning a realization with
+        :param fixed_position: determines whether halos can be moved around when aligning a realization with
         the rendering volume
         """
 
@@ -49,22 +51,31 @@ class Halo(ABC):
         self._rescale_norm = 1.
         self.fixed_position = fixed_position
         self._rescaled_once = False
+        assert z > 0, 'Negative redshifts are unphysical for halos'
 
-    def rescale_normalization(self, factor):
+    @property
+    def rescale_norm(self):
+        return self._rescale_norm
+
+    def rescale_normalization(self, factor, force=False):
         """
         Sets the rescaling factor for the normalization (only can do this once)
         :param factor:
         :return:
         """
-        if self._rescaled_once:
-            pass
-        else:
-            self._rescaled_once = True
+        if force:
             self._rescale_norm = factor
-            if hasattr(self, '_params_physical'):
-                delattr(self, '_params_physical')
-            if hasattr(self, '_kwargs_lenstronomy'):
-                delattr(self, '_kwargs_lenstronomy')
+            self._rescaled_once = True
+        else:
+            if self._rescaled_once:
+                pass
+            else:
+                self._rescaled_once = True
+                self._rescale_norm *= factor
+                if hasattr(self, '_params_physical'):
+                    delattr(self, '_params_physical')
+                if hasattr(self, '_kwargs_lenstronomy'):
+                    delattr(self, '_kwargs_lenstronomy')
 
     @property
     @abstractmethod
@@ -110,8 +121,8 @@ class Halo(ABC):
         """
 
         if not hasattr(self, '_z_infall'):
-            self._z_infall = self.lens_cosmo.z_accreted_from_zlens(self.mass, self.z)
-
+            self._z_infall = self.lens_cosmo.z_accreted_from_zlens(self.mass)
+            assert self._z_infall >= self.z, 'infall redshifts less than current redshift are unphysical'
         return self._z_infall
 
     @property
@@ -125,7 +136,9 @@ class Halo(ABC):
             print("time since infall is a meaningless concept for field halos")
             return None
         if not hasattr(self, '_time_since_infall'):
-            self._time_since_infall = self.lens_cosmo.cosmo.halo_age(self.z, self.z_infall)
+            astropy = self.lens_cosmo.cosmo.astropy
+            self._time_since_infall = astropy.age(self.z).value - astropy.age(self.z_infall).value
+            assert self._time_since_infall > 0
         return self._time_since_infall
 
     @property
@@ -143,10 +156,20 @@ class Halo(ABC):
             self._rperi_units_r200 = 10**float(_log10_rpericenter_sampling(n_samples=1.0))
         return self._rperi_units_r200
 
+    def set_bound_mass(self, bound_mass):
+        """
+        Allows the explicit assignment of bound mass to halos
+        :param bound_mass: the bound mass
+        """
+        self._bound_mass = bound_mass
+
     @property
     def bound_mass(self):
-        raise Exception('this halo class does not have a bound mass attribute because the profile does not have '
+        if not hasattr(self, '_bound_mass'):
+            raise Exception('this halo class does not have a bound mass attribute because the profile does not have '
                         'a tidal truncation radius')
+        else:
+            return self._bound_mass
 
     @property
     def halo_age(self):
@@ -165,24 +188,18 @@ class Halo(ABC):
         """
         Computes the halo concentration (once)
         """
-
         raise Exception('this class does not have a well-defined concentration parameter')
 
     @property
     def z_eval(self):
         """
-        Returns the redshift at which to evalate the concentration-mass relation
+        Returns the redshift at which to evaluate the concentration-mass relation and NFW halo parameters
         """
         if not hasattr(self, '_zeval'):
-
             if self.is_subhalo:
-                if 'evaluate_mc_at_zlens' in self._args.keys() and self._args['evaluate_mc_at_zlens']:
-                    self._zeval = self.z
-                else:
-                    self._zeval = self.z_infall
+                self._zeval = self.z_infall
             else:
                 self._zeval = self.z
-
         return self._zeval
 
     @property
@@ -192,11 +209,7 @@ class Halo(ABC):
         :return: rs, r200 and rho_s in units kpc, kpc, and M_sun / kpc^3
         """
         if not hasattr(self, '_nfw_params'):
-            if self.mdef in ['TNFWC', 'GNFW']:
-                pseudo_nfw = True
-            else:
-                pseudo_nfw = False
-            rhos, rs, r200 = self.lens_cosmo.NFW_params_physical(self.mass, self.c, self.z_eval, pseudo_nfw)
+            rhos, rs, r200 = self.lens_cosmo.NFW_params_physical(self.mass, self.c, self.z_eval, self._pseudo_nfw)
             self._nfw_params = [rhos, rs, r200]
         return self._nfw_params[0], self._nfw_params[1], self._nfw_params[2]
 
@@ -207,6 +220,18 @@ class Halo(ABC):
         :return: mass enclosed inside rmax
         """
         if rmax == 'r200':
-            rmax = self.nfw_params[2]
+            rmax = self.c * self.nfw_params[1]
         _integrand = lambda r: 4 * np.pi * r ** 2 * self.density_profile_3d(r, profile_args)
         return quad(_integrand, 0, rmax)[0]
+
+    def logarithmic_profile_slope(self, r, profile_args=None):
+        """
+
+        :param r:
+        :param profile_args:
+        :return:
+        """
+        density = self.density_profile_3d(r, profile_args)
+        log_density = np.log(density)
+        logr = np.log(r)
+        return np.gradient(log_density, logr)

@@ -8,6 +8,9 @@ from pyHalo.Halos.lens_cosmo import LensCosmo
 from pyHalo.Cosmology.cosmology import Cosmology
 import pytest
 import numpy as np
+from pyHalo.PresetModels.cdm import CDM
+from colossus.cosmology import cosmology
+from colossus.halo import mass_so
 
 class TestTNFWHalos(object):
 
@@ -21,6 +24,48 @@ class TestTNFWHalos(object):
         self.truncation_class = TruncationRoche(None, 100000000.0)
         self.concentration_class = ConcentrationDiemerJoyce(self.lens_cosmo, scatter=False)
         self.lclenstronomy = LensCosmoLenstronomy(self.zhalo, self.zsource, astropy)
+
+    def test_rhos_rs_eval(self):
+        """
+        Test that rhos and rs are evaluated correctly for subhalos (meaning at infall)
+        credit Charles Gannon
+        """
+
+        z_lens = 0.5
+        z_source = 2
+        cone_opening_angle_arcsec = 4
+        sigma_sub = 1
+        log_mlow, log_mhigh = 8, 13
+        realization_pyhalo = CDM(
+            z_lens,
+            z_source,
+            cone_opening_angle_arcsec=cone_opening_angle_arcsec,
+            LOS_normalization=0,
+            log_mlow=log_mlow,
+            log_mhigh=log_mhigh,
+            log_m_host=13,
+            truncation_model_subhalos='TRUNCATION_GALACTICUS',
+            log10_sigma_sub=sigma_sub
+        )
+        # Colossus
+        cosmo = cosmology.setCosmology("planck18")
+        rs_pyh = np.asarray([h.params_physical["rs"] for h in realization_pyhalo.halos])
+        m_pyh = np.asarray([h.mass for h in realization_pyhalo.halos])
+        z_pyh = np.asarray([h._z_infall for h in realization_pyhalo.halos])
+        c_pyh = np.asarray([h.c for h in realization_pyhalo.halos])
+        rv_pyh_col = [mass_so.M_to_R(m * cosmo.h, z, "200c") / cosmo.h for m, z in zip(m_pyh, z_pyh)]
+        c_colossus = rv_pyh_col / rs_pyh
+        npt.assert_almost_equal(c_pyh/c_colossus, np.ones_like(c_pyh),2)
+
+    def test_simple_setup(self):
+        mass = 10 ** 8
+        x = 0.0
+        y = 0.0
+        z = 0.5
+        tau = 2.2
+        halo = TNFWFieldHalo.simple_setup(mass, x, y, z, tau, self.lens_cosmo)
+        kwargs, _ = halo.lenstronomy_params
+        npt.assert_almost_equal(kwargs[0]['r_trunc']/kwargs[0]['Rs'], tau, 3)
 
     def test_lenstronomy_params(self):
 
@@ -95,6 +140,23 @@ class TestTNFWHalos(object):
         m_calculated = tnfw_fieldhalo.mass_3d(rmax)
         npt.assert_almost_equal(mtheory/m_calculated, 1.0)
 
+        tau = 2.
+        tnfw_halo = TNFWFieldHalo.simple_setup(m, 0.0, 0.0, 0.6, tau, self.lens_cosmo)
+        rs = tnfw_halo.nfw_params[1]
+        r = np.linspace(0.001, tnfw_halo.c, 10000) * rs
+        rho = tnfw_halo.density_profile_3d_lenstronomy(r)
+        m_exact = np.trapz(4 * np.pi * rho * r ** 2, r)
+        m_class = tnfw_halo.mass_3d('r200')
+        npt.assert_almost_equal(m_class/ m_exact,1,3)
+
+        tau = 1e-3
+        tnfw_halo = TNFWFieldHalo.simple_setup(m, 0.0, 0.0, 0.6, tau, self.lens_cosmo)
+        rs = tnfw_halo.nfw_params[1]
+        r = np.linspace(0.0001, tnfw_halo.c, 100000) * rs
+        rho = tnfw_halo.density_profile_3d_lenstronomy(r)
+        m_exact = np.trapz(4 * np.pi * rho * r ** 2, r)
+        m_class = tnfw_halo.mass_3d('r200')
+        npt.assert_almost_equal(m_class / m_exact, 1, 3)
 
 if __name__ == '__main__':
     pytest.main()

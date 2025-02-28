@@ -1,5 +1,6 @@
 import numpy.testing as npt
-from pyHalo.Halos.lens_cosmo import LensCosmo, InfallDistributionGalacticus2024
+from pyHalo.Halos.lens_cosmo import LensCosmo
+from pyHalo.Halos.accretion import InfallDistributionGalacticus2024, InfallDistributionHybrid
 import numpy as np
 import pytest
 from astropy.cosmology import FlatLambdaCDM
@@ -42,15 +43,6 @@ class TestLensCosmo(object):
         sigma_crit = self.lens_cosmo.get_sigma_crit_lensing(0.7, 1.7)
         npt.assert_almost_equal(sigma_crit_mass, sigma_crit * area)
 
-    def test_subhalo_accretion(self):
-
-        zi = [self.lens_cosmo.z_accreted_from_zlens(None, 0.5)
-              for _ in range(0, 25000)]
-        zi = np.array(zi) - 0.5
-        h, b = np.histogram(zi, bins=np.linspace(0.0, 20, 20))
-        z_median = np.median(zi)
-        npt.assert_almost_equal(z_median / 6.955, 1, 1)
-
     def test_mhm_convert(self):
 
         mthermal = 5.3
@@ -81,13 +73,87 @@ class TestLensCosmo(object):
         npt.assert_almost_equal(rs_kpc, rs*1000)
         npt.assert_almost_equal(r200_kpc, r200 * 1000)
 
-    def test_z_accretion_class(self):
+    def test_infall(self):
 
         zlens = 0.5
-        pdf = InfallDistributionGalacticus2024(zlens)
-        z = [pdf.z_accreted_from_zlens(zlens) for _ in range(0, 1000)]
-        for zi in z:
-            npt.assert_equal(zi > zlens, True)
+        zsource = 2.0
+
+        lens_cosmo = LensCosmo(zlens, zsource, self.cosmo, infall_redshift_model='HYBRID_INFALL')
+        z_infall = lens_cosmo.z_accreted_from_zlens(10 ** 8)
+        npt.assert_equal(True, z_infall > zlens)
+
+        lens_cosmo = LensCosmo(zlens, zsource, self.cosmo, infall_redshift_model='DIRECT_INFALL')
+        z_infall = lens_cosmo.z_accreted_from_zlens(10 ** 8)
+        npt.assert_equal(True, z_infall > zlens)
+
+        infall_time_model = InfallDistributionGalacticus2024
+        kwargs_infall_model = {}
+        lens_cosmo = LensCosmo(zlens, zsource, self.cosmo, infall_redshift_model=infall_time_model,
+                               kwargs_infall_model=kwargs_infall_model)
+        z_infall = lens_cosmo.z_accreted_from_zlens(10 ** 8)
+        npt.assert_equal(True, z_infall > zlens)
+
+        infall_time_model = InfallDistributionHybrid
+        kwargs_infall_model = {'log_m_host': 13.0}
+        lens_cosmo = LensCosmo(zlens, zsource, self.cosmo, infall_redshift_model=infall_time_model,
+                               kwargs_infall_model=kwargs_infall_model)
+        z_infall = lens_cosmo.z_accreted_from_zlens(10 ** 8)
+        npt.assert_equal(True, z_infall > zlens)
+
+    def test_sidm_halo_age(self):
+
+        z, z_infall, lambda_t, zform = 0.5, 5.0, 1.0, 10.0
+        halo_age = self.lens_cosmo.sidm_halo_effective_age(z, z_infall, lambda_t, zform=10.0)
+        halo_age_2 = self.lens_cosmo.sidm_halo_effective_age(z, z_infall, 2*lambda_t, zform=10.0)
+        npt.assert_equal(halo_age_2 > halo_age, True)
+
+    def test_nfw_params(self):
+
+        m, c, z = 10**8, 11.0, 0.5
+        rhos, rs, r200 = self.lens_cosmo.nfwParam_physical(m,c,z)
+        Rs_Angle, Theta_Rs = self.lens_cosmo.nfw_physical2angle(m,c,z)
+        rs_angle, theta_rs = self.lens_cosmo.nfw_physical2angle_fromNFWparams(rhos, rs, z)
+        npt.assert_almost_equal(Rs_Angle, rs_angle)
+        npt.assert_almost_equal(Theta_Rs, theta_rs)
+
+        rhos_kpc, rs_kpc, r200_kpc = self.lens_cosmo.NFW_params_physical(m, c, z)
+        npt.assert_almost_equal(rhos_kpc, rhos * 1e-9)
+        npt.assert_almost_equal(rs_kpc, rs * 1e3)
+        rs_angle, theta_rs = self.lens_cosmo.nfw_physical2angle_fromNFWparams(rhos_kpc * 1e9,
+                                                                              rs_kpc * 1e-3,
+                                                                              z)
+        npt.assert_almost_equal(Rs_Angle, rs_angle)
+        npt.assert_almost_equal(Theta_Rs, theta_rs)
+
+    def test_sidm_timescale(self):
+
+        # test scaling with halo mass
+        m1 = 10 ** 10
+        c1 = 5
+        rhos, rs, r200 = self.lens_cosmo.NFW_params_physical(m1, c1, 0.5)
+        tc1 = self.lens_cosmo.sidm_collapse_timescale(rhos, rs, 10.0)
+        m2 = 10 ** 8
+        c2 = 5
+        rhos, rs, r200 = self.lens_cosmo.NFW_params_physical(m2, c2, 0.5)
+        tc2 = self.lens_cosmo.sidm_collapse_timescale(rhos, rs, 10.0)
+        npt.assert_almost_equal((m2/m1) ** (-1/3), tc2/tc1, 6)
+
+        # test scaling with concentration
+        m1 = 10 ** 8
+        c1 = 10
+        rhos, rs, r200 = self.lens_cosmo.NFW_params_physical(m1, c1, 0.5)
+        tc1 = self.lens_cosmo.sidm_collapse_timescale(rhos, rs, 10.0)
+        m2 = 10 ** 8
+        c2 = 20
+        rhos, rs, r200 = self.lens_cosmo.NFW_params_physical(m2, c2, 0.5)
+        tc2 = self.lens_cosmo.sidm_collapse_timescale(rhos, rs, 10.0)
+        npt.assert_almost_equal((c2 / c1) ** (-7 / 2), tc2 / tc1, 1)
+
+        rhos = 2.74e8
+        rs = 0.141
+        tc_yangetal_2023 = self.lens_cosmo.sidm_collapse_timescale(rhos, rs, 7.1)
+        npt.assert_almost_equal(tc_yangetal_2023, 28.07, 2)
+
 
 if __name__ == '__main__':
     pytest.main()
