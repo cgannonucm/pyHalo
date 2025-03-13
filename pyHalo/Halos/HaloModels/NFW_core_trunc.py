@@ -135,7 +135,7 @@ class TNFWCHalo(Halo):
             r_trunc_angle = rt_kpc / kpc_per_arcsec
             x = np.logspace(-4,
                             np.log10(self.c),
-                            2000)
+                            1000)
             r = x * rs_0
             kwargs_temp = {'alpha_Rs': 1.0,
                            'Rs': Rs_angle,
@@ -273,15 +273,12 @@ class Hybrid(Halo):
         rho_tnfwc = self.tnfwc_halo.density_profile_3d(r)
         return rho_tnfw * (1-self._rescaling_factor) + rho_tnfwc * self._rescaling_factor
 
-def tnfwc_mass(rmax, rho, rs, rc):
-
-    return _tnfwc_lenstronomy.mass_3d(rmax, rs, rho, rc, 1000*rs)
-
 def evolve_profile(t, rs_0):
 
     t = min(1.6, t)
     rs = rs_0 * rs_evolution(t)
     rc = rs_0 * rc_evolution(t)
+    rc = max(1e-7 * rs, rc)
     return rs, rc
 
 def rs_evolution(tr):
