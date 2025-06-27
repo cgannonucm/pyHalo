@@ -9,7 +9,7 @@ from pyHalo.utilities import MinHaloMassULDM, de_broglie_wavelength
 
 def ULDM(z_lens, z_source, log10_m_uldm, log10_fluc_amplitude=-0.8, fluctuation_size_scale=0.05,
           fluctuation_size_dispersion=0.2, n_fluc_scale=1.0, velocity_scale=200, sigma_sub=0.025,
-         log10_sigma_sub=None, log_mlow=6., log_mhigh=10.,
+         log10_sigma_sub=-1.0, log10_dNdA=None, log_mlow=6., log_mhigh=10.,
         mass_function_model_subhalos='SHMF_SCHIVE2016', kwargs_mass_function_subhalos={},
         mass_function_model_fieldhalos='SCHIVE2016', kwargs_mass_function_fieldhalos={},
         concentration_model_subhalos='LAROCHE2022', kwargs_concentration_model_subhalos={},
@@ -18,7 +18,9 @@ def ULDM(z_lens, z_source, log10_m_uldm, log10_fluc_amplitude=-0.8, fluctuation_
         truncation_model_fieldhalos='TRUNCATION_RN', kwargs_truncation_model_fieldhalos={},
         shmf_log_slope=-1.9, cone_opening_angle_arcsec=6., log_m_host=13.3, r_tidal=0.25,
         LOS_normalization=1.0, geometry_type='DOUBLE_CONE', kwargs_cosmo=None,
-         uldm_plaw=1 / 3, flucs=True, flucs_shape='aperture', flucs_args={}, n_cut=50000, r_ein=1.0):
+         uldm_plaw=1 / 3, flucs=True, flucs_shape='aperture', flucs_args={}, n_cut=50000, r_ein=1.0,
+         mdef_halos='ULDM'
+         ):
 
     """
     This generates realizations of ultra-light dark matter (ULDM), including the ULDM halo mass function and halo density profiles,
@@ -88,9 +90,9 @@ def ULDM(z_lens, z_source, log10_m_uldm, log10_fluc_amplitude=-0.8, fluctuation_
     :param fluctuation_size_dispersion: sets the variance of the size of the fluctuations
     :param n_fluc_scale: rescales the number of fluctuations
     :param velocity_scale: the velocity scale of the host halo used to convert particle mass to de-Broglie wavelength
-    :param sigma_sub: amplitude of the subhalo mass function at 10^8 solar masses in units [# of halos / kpc^2]
-    :param log10_sigma_sub: optional setting of sigma_sub in log10-scale (useful for log-uniform priors); if this is specified
-    it overwrites the value of sigma_sub
+    :param log10_sigma_sub: amplitude of the subhalo mass function at 10^8 solar masses in units [# of halos / kpc^2];
+    this setting will trigger the automatic scaling with host halo mass and redshift found by Gannon et al. (2025)
+    :param log10_dNdA: amplitude of the subhalo mass function at 10^8 solar masses in units [# of halos / kpc^2]
     :param log_mlow: log base 10 of the minimum halo mass to render
     :param log_mhigh: log base 10 of the maximum halo mass to render
     :param mass_function_model_subhalos: mass function model for subhalos, see mass_function_models.py for a list
@@ -126,6 +128,7 @@ def ULDM(z_lens, z_source, log10_m_uldm, log10_fluc_amplitude=-0.8, fluctuation_
     sqrt(n_cut / n_total) if n_total > n_cut, where n_total is the number of expected fluctuations given the de-Broglie
     wavelength and the area in which the fluctuations area rendered
     :param r_ein: The characteristic angular used to convert fluctuations in convergence to fluctuations in mass
+    :param mdef_halos: The mass definition for ULDM halos, should be either ULDM or TNFW
     :return: a realization of halos and fluctuations modeled as Gaussians in ULDM
     """
 
@@ -143,7 +146,7 @@ def ULDM(z_lens, z_source, log10_m_uldm, log10_fluc_amplitude=-0.8, fluctuation_
     kwargs_density_profile['scale_nfw'] = False
     kwargs_density_profile['uldm_plaw'] = uldm_plaw
     kwargs_wdm = {'z_lens': z_lens, 'z_source': z_source, 'log_mc': log_m0, 'sigma_sub': sigma_sub,
-                  'log10_sigma_sub': log10_sigma_sub,
+                  'log10_sigma_sub': log10_sigma_sub, 'log10_dNdA': log10_dNdA,
                   'log_mlow': log_m_min, 'log_mhigh': log_mhigh,
                   'mass_function_model_subhalos': mass_function_model_subhalos,
                   'kwargs_mass_function_subhalos': kwargs_mass_function_subhalos,
@@ -160,10 +163,9 @@ def ULDM(z_lens, z_source, log10_m_uldm, log10_fluc_amplitude=-0.8, fluctuation_
                   'shmf_log_slope': shmf_log_slope, 'cone_opening_angle_arcsec': cone_opening_angle_arcsec,
                   'log_m_host': log_m_host, 'r_tidal': r_tidal, 'LOS_normalization': LOS_normalization,
                   'geometry_type': geometry_type, 'kwargs_cosmo': kwargs_cosmo,
-                  'mdef_subhalos': 'ULDM', 'mdef_field_halos': 'ULDM',
+                  'mdef_subhalos': mdef_halos, 'mdef_field_halos': mdef_halos,
                   'kwargs_density_profile': kwargs_density_profile
                   }
-
     uldm_no_fluctuations = WDM(**kwargs_wdm)
     if flucs: # add fluctuations to realization
         ext = RealizationExtensions(uldm_no_fluctuations)

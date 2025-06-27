@@ -46,6 +46,18 @@ class Halo(ABC):
         assert z > 0, 'Negative redshifts are unphysical for halos'
 
     @property
+    def args_profile(self):
+        return self._args
+
+    def update_args(self, kwargs_halo):
+        """
+        Update the interal _args argument of the profile
+        :param kwargs_halo: additional keyword arguments that include default settings for the halo
+        :return:
+        """
+        self._args.update(kwargs_halo)
+
+    @property
     def rescale_norm(self):
         return self._rescale_norm
 
@@ -133,6 +145,16 @@ class Halo(ABC):
             assert self._time_since_infall > 0
         return self._time_since_infall
 
+    def set_infall_redshift(self, z):
+        """
+        Manually set the infall redshift of a subhalo
+        :param z: infall redshift
+        """
+        if self.is_subhalo:
+            self._z_infall = z
+        else:
+            raise Exception('Can only set the infall redshift for subhalos!')
+
     def set_bound_mass(self, bound_mass):
         """
         Allows the explicit assignment of bound mass to halos
@@ -143,7 +165,7 @@ class Halo(ABC):
     @property
     def bound_mass(self):
         if not hasattr(self, '_bound_mass'):
-            raise Exception('this halo class does not have a bound mass attribute because the profile does not have '
+            raise Exception('this halo class, with mass definition '+ self.mdef +' does not have a bound mass attribute because the profile does not have '
                         'a tidal truncation radius')
         else:
             return self._bound_mass
@@ -204,9 +226,10 @@ class Halo(ABC):
     def logarithmic_profile_slope(self, r, profile_args=None):
         """
 
-        :param r:
-        :param profile_args:
-        :return:
+        :param r: distance from center of halo [kpc]
+        :param profile_args: keyword arguments for the density profile; if not specified, uses the ones computed inside
+        each halo class
+        :return: the density profile in units M_sun / kpc^3
         """
         density = self.density_profile_3d(r, profile_args)
         log_density = np.log(density)

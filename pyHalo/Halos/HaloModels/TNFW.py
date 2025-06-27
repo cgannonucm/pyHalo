@@ -50,6 +50,28 @@ class TNFWFieldHalo(Halo):
         return TNFWFieldHalo(mass, x, y, r3d, z, sub_flag, lens_cosmo, args,
                              truncation_class, concentration_class, 1.0)
 
+    def mass_2d(self, rmax):
+        """
+        Computes the 2-D density profile of the halo
+        :param r: distance from center of halo [kpc]
+        :return: the density profile in units M_sun / kpc^3
+        """
+        if rmax == 'r200':
+            rmax = self.nfw_params[-1]
+        kwargs_lenstronomy = self.lenstronomy_params[0][0]
+        kpc_per_arcsec = self._lens_cosmo.cosmo.kpc_proper_per_asec(self.z)
+        x = np.logspace(-3.5, 0.0, 5000) * rmax / kpc_per_arcsec
+        y = 0
+        fxx, _, _, fyy = self.tnfw_lenstronomy.hessian(x, y,
+                                                        kwargs_lenstronomy['Rs'],
+                                                        kwargs_lenstronomy['alpha_Rs'],
+                                                        kwargs_lenstronomy['r_trunc'])
+        kappa = 0.5 * (fxx + fyy)
+        sigma_crit_mpc = self._lens_cosmo.get_sigma_crit_lensing(self.z, self._lens_cosmo.z_source)
+        sigma_crit_kpc = sigma_crit_mpc * 1e-6
+        sigma_crit_arcsec = sigma_crit_kpc * kpc_per_arcsec ** 2
+        return np.trapz(kappa * 2 * np.pi * x, x) * sigma_crit_arcsec
+
     def density_profile_3d(self, r, profile_args=None, scaling=1.0):
         """
         Computes the 3-D density profile of the halo
@@ -163,6 +185,18 @@ class TNFWFieldHalo(Halo):
         return self._profile_args
 
     @property
+    def vmax_nfw(self):
+        """
+        Returns the maximum circular velocity in km/sec
+        :return:
+        """
+        if not hasattr(self, '_vmax'):
+            rhos, rs, _ = self.nfw_params
+            _ = self.profile_args
+            self._vmax = self._lens_cosmo.nfw_vmax(self._rescale_norm * rhos, rs)
+        return self._vmax
+
+    @property
     def pseudo_nfw(self):
         return False
 
@@ -170,6 +204,35 @@ class TNFWSubhalo(TNFWFieldHalo):
     """
     Defines a truncated NFW halo that is a subhalo of the host dark matter halo
     """
+
+    @classmethod
+    def simple_setup(cls, mass, f_bound, z_infall, x, y, z, lens_cosmo):
+        """
+        Creates an instance of the TNFWSubhalo class with a specified bound mass, from which the density profile is
+        computed using the tidal track
+        :param mass:
+        :param f_bound:
+        :param z_infall:
+        :param x:
+        :param y:
+        :param z:
+        :param lens_cosmo:
+        :return:
+        """
+        r3d = None
+        sub_flag = True
+        args = {}
+        from pyHalo.concentration_models import preset_concentration_models
+        from pyHalo.truncation_models import truncation_models
+        _c_model, _ = preset_concentration_models('DIEMERJOYCE19')
+        _t_model, _ = truncation_models('TRUNCATION_GALACTICUS')
+        concentration_class = _c_model(lens_cosmo.cosmo.astropy, scatter=False)
+        truncation_class = _t_model(lens_cosmo, 5.0)
+        tnfw_subhalo = TNFWSubhalo(mass, x, y, r3d, z, sub_flag, lens_cosmo, args,
+                             truncation_class, concentration_class, 1.0)
+        tnfw_subhalo._mbound_galacticus_definition = f_bound * mass
+        tnfw_subhalo.set_infall_redshift(z_infall)
+        return tnfw_subhalo
 
     @property
     def bound_mass(self):
@@ -195,7 +258,6 @@ class TNFWSubhalo(TNFWFieldHalo):
             pass
         else:
             raise Exception('this method can only be called when using the TruncationGalacticus class')
-
         if not hasattr(self, '_mbound_galacticus_definition'):
             self._mbound_galacticus_definition = self._truncation_class.calculate_mbound(self)
         return self._mbound_galacticus_definition

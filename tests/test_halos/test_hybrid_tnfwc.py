@@ -1,6 +1,6 @@
 import numpy.testing as npt
 import numpy as np
-from pyHalo.Halos.HaloModels.NFW_core_trunc import Hybrid, TNFWCHalo
+from pyHalo.Halos.HaloModels.NFW_core_trunc import Hybrid, TNFWCHaloEvolving
 from pyHalo.Halos.HaloModels.TNFW import TNFWFieldHalo
 from pyHalo.truncation_models import ConstantTruncationArcsec
 from pyHalo.concentration_models import ConcentrationDiemerJoyce
@@ -29,8 +29,9 @@ class TestTNFWC(object):
                                        truncation_class, concentration_class, unique_tag)
         kwargs_profile = {'sidm_timescale': 20.,
                           'lambda_t': 1.0,
-                          'mass_conservation': self.tnfw_halo.mass}
-        self.tnfwc_halo = TNFWCHalo(mass, x, y, r3d, z,
+                          'mass_conservation': self.tnfw_halo.mass,
+                          'rt_kpc': 1000}
+        self.tnfwc_halo = TNFWCHaloEvolving(mass, x, y, r3d, z,
                                              False, lens_cosmo, kwargs_profile,
                                              truncation_class, concentration_class, unique_tag)
 

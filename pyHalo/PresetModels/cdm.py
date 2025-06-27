@@ -11,7 +11,7 @@ from pyHalo.realization_extensions import RealizationExtensions
 
 
 def CDM(z_lens, z_source, sigma_sub=0.025, log_mlow=6., log_mhigh=10., log10_sigma_sub=None,
-        concentration_model_subhalos='LUDLOW2016', kwargs_concentration_model_subhalos={},
+        log10_dNdA=None, concentration_model_subhalos='LUDLOW2016', kwargs_concentration_model_subhalos={},
         concentration_model_fieldhalos='LUDLOW2016', kwargs_concentration_model_fieldhalos={},
         truncation_model_subhalos='TRUNCATION_GALACTICUS', kwargs_truncation_model_subhalos={},
         truncation_model_fieldhalos='TRUNCATION_RN', kwargs_truncation_model_fieldhalos={},
@@ -21,15 +21,18 @@ def CDM(z_lens, z_source, sigma_sub=0.025, log_mlow=6., log_mhigh=10., log10_sig
         log_m_host=13.3,  r_tidal=0.25, LOS_normalization=1.0, two_halo_contribution=True,
         delta_power_law_index=0.0, geometry_type='DOUBLE_CONE', kwargs_cosmo=None, host_scaling_factor=0.55,
         redshift_scaling_factor=0.37, two_halo_Lazar_correction=True, draw_poisson=True, c_host=6.0,
-        add_globular_clusters=False, kwargs_globular_clusters=None):
+        add_globular_clusters=False, kwargs_globular_clusters=None, mass_threshold_sis=5*10**10,
+        galaxy_model='GNFW'):
     """
     This class generates realizations of dark matter structure in Cold Dark Matter
 
     :param z_lens: main deflector redshift
     :param z_source: source redshift
     :param sigma_sub: amplitude of the subhalo mass function at 10^8 solar masses in units [# of halos / kpc^2]
-    :param log10_sigma_sub: optional setting of sigma_sub in log10-scale (useful for log-uniform priors); if this is specified
-    it overwrites the value of sigma_sub
+    :param log10_sigma_sub: amplitude of the subhalo mass function at 10^8 solar masses in units [# of halos / kpc^2];
+    this setting, as well as sigma_sub, will trigger the automatic scaling with host halo mass and redshift found by Gannon et al. (2025)
+    - Note: this overrides sigma_sub, if provided
+    :param log10_dNdA: amplitude of the subhalo mass function at 10^8 solar masses in units [# of halos / kpc^2]
     :param log_mlow: log base 10 of the minimum halo mass to render
     :param log_mhigh: log base 10 of the maximum halo mass to render
     :param concentration_model_subhalos: the concentration-mass relation applied to subhalos,
@@ -68,6 +71,8 @@ def CDM(z_lens, z_source, sigma_sub=0.025, log_mlow=6., log_mhigh=10., log10_sig
     :param c_host: manually set host halo concentration
     :param add_globular_clusters: bool; include a population of globular clusters around image positions
     :param kwargs_globular_clusters: keyword arguments for the GC population; see documentation in RealizationExtensions
+    :param mass_threshold_sis: the mass threshold above which NFW profiles become SIS/GNFW
+    :param galaxy_model: the profile of massive line-of-sight galaxies; either SIS or GNFW
     :return: a realization of dark matter halos
     """
     # FIRST WE CREATE AN INSTANCE OF PYHALO, WHICH SETS THE COSMOLOGY
@@ -122,19 +127,23 @@ def CDM(z_lens, z_source, sigma_sub=0.025, log_mlow=6., log_mhigh=10., log10_sig
     # NOW THAT THE CLASSES ARE SPECIFIED, WE SORT THE KEYWORD ARGUMENTS AND CLASSES INTO LISTS
     population_model_list = ['SUBHALOS', 'LINE_OF_SIGHT']
     mass_function_class_list = [mass_function_model_subhalos, mass_function_model_fieldhalos]
-    # check for log10 value of sigma_sub
-    if log10_sigma_sub is not None:
-        sigma_sub = 10 ** log10_sigma_sub
     kwargs_subhalos = {'log_mlow': log_mlow,
-                       'log_mhigh': log_mhigh,
-                       'm_pivot': 10 ** 8,
-                       'power_law_index': shmf_log_slope,
-                       'delta_power_law_index': delta_power_law_index,
-                       'log_m_host': log_m_host,
-                       'sigma_sub': sigma_sub,
-                       'host_scaling_factor': host_scaling_factor,
-                       'redshift_scaling_factor': redshift_scaling_factor,
-                       'draw_poisson': draw_poisson}
+                            'log_mhigh': log_mhigh,
+                            'm_pivot': 10 ** 8,
+                            'power_law_index': shmf_log_slope,
+                            'log_m_host': log_m_host,
+                            'delta_power_law_index': 0.0,
+                            'host_scaling_factor': host_scaling_factor,
+                            'redshift_scaling_factor': redshift_scaling_factor,
+                            'draw_poisson': draw_poisson}
+    # check for log10 value of sigma_sub
+    if log10_dNdA is not None:
+        kwargs_subhalos['dndA'] = 10 ** log10_dNdA
+    else:
+        if log10_sigma_sub is not None:
+            kwargs_subhalos['sigma_sub'] = 10 ** log10_sigma_sub
+        else:
+            kwargs_subhalos['sigma_sub'] = sigma_sub
     kwargs_los = {'log_mlow': log_mlow,
                        'log_mhigh': log_mhigh,
                   'LOS_normalization': LOS_normalization,
@@ -180,6 +189,9 @@ def CDM(z_lens, z_source, sigma_sub=0.025, log_mlow=6., log_mhigh=10., log10_sig
                                      geometry, mdef_subhalos, mdef_field_halos, kwargs_halo_model,
                                      two_halo_Lazar_correction, scale_2halo_boost_factor=1.0,
                                      nrealizations=1)[0]
+    if mass_threshold_sis is not None:
+        ext = RealizationExtensions(realization)
+        realization = ext.SIS_injection(mass_threshold_sis, galaxy_model)
     if add_globular_clusters:
         ext = RealizationExtensions(realization)
         realization = ext.add_globular_clusters(**kwargs_globular_clusters)
@@ -190,7 +202,7 @@ def CDMCorrelatedStructure(z_lens, z_source, log_mlow=6., log_mhigh=10.,
         truncation_model='TRUNCATION_RN', kwargs_truncation_model={},
         cone_opening_angle_arcsec=6., log_m_host=13.3, LOS_normalization=1.0,
         delta_power_law_index=0.0, geometry_type='DOUBLE_CONE', kwargs_cosmo=None,
-        scale_2halo_boost_factor=1.0):
+        scale_2halo_boost_factor=1.0, mass_threshold_sis=5*10**10):
     """
 
     :param z_lens:
@@ -207,6 +219,7 @@ def CDMCorrelatedStructure(z_lens, z_source, log_mlow=6., log_mhigh=10.,
     :param delta_power_law_index:
     :param geometry_type:
     :param kwargs_cosmo:
+    :param mass_threshold_sis: the mass threshold above which NFW profiles become SIS
     :return:
     """
     # FIRST WE CREATE AN INSTANCE OF PYHALO, WHICH SETS THE COSMOLOGY
@@ -256,9 +269,11 @@ def CDMCorrelatedStructure(z_lens, z_source, log_mlow=6., log_mhigh=10.,
     kwargs_spatial_distribution_list = [kwargs_spatial_distribution]
     kwargs_mass_function_list = [kwargs_mass_function]
     two_halo_Lazar_correction = True
-    realization_list = pyhalo.render(population_model_list, mass_function_class_list, kwargs_mass_function_list,
+    realization = pyhalo.render(population_model_list, mass_function_class_list, kwargs_mass_function_list,
                                      spatial_distribution_class_list, kwargs_spatial_distribution_list,
                                      geometry, mdef_subhalos, mdef_field_halos, kwargs_halo_model,
-                                     two_halo_Lazar_correction, scale_2halo_boost_factor, nrealizations=1)
-    return realization_list[0]
-
+                                     two_halo_Lazar_correction, scale_2halo_boost_factor, nrealizations=1)[0]
+    if mass_threshold_sis is not None:
+        ext = RealizationExtensions(realization)
+        realization = ext.SIS_injection(mass_threshold_sis)
+    return realization

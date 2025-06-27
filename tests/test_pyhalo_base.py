@@ -9,6 +9,7 @@ from pyHalo.Rendering.SpatialDistributions.uniform import LensConeUniform
 from pyHalo.Rendering.SpatialDistributions.nfw import ProjectedNFW
 from pyHalo.Halos.tidal_truncation import TruncationRN, TruncationRoche
 from pyHalo.Halos.concentration import ConcentrationDiemerJoyce
+from pyHalo.pyhalo import check_code_version
 
 class TestpyHalo(object):
 
@@ -19,7 +20,8 @@ class TestpyHalo(object):
     def test_version(self):
 
         pyhalo = pyHalo(0.5, 2.)
-        npt.assert_string_equal(pyhalo.CODE_VERSION, '1.3.5')
+        npt.assert_string_equal(pyhalo.CODE_VERSION, '1.4.1')
+        check_code_version('1.4.1')
 
     def test_create_realizations(self):
         pyhalo = pyHalo(0.5, 2.)
@@ -152,7 +154,6 @@ class TestpyHalo(object):
                                              nrealizations=1)
         nhalos_2 = len(realization_list_2[0].halos)
         npt.assert_array_less(nhalos_1, nhalos_2)
-
 
 if __name__ == '__main__':
 

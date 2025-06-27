@@ -8,7 +8,6 @@ from pyHalo.Halos.HaloModels.powerlaw import PowerLawFieldHalo, PowerLawSubhalo
 from pyHalo.Halos.HaloModels.PsuedoJaffe import PJaffeSubhalo
 from pyHalo.Halos.HaloModels.blackhole import BlackHole
 from pyHalo.Halos.HaloModels.ULDM import ULDMFieldHalo, ULDMSubhalo
-from pyHalo.Halos.HaloModels.NFW_core_trunc import TNFWCHalo
 from pyHalo.Halos.HaloModels.gaussianhalo import GaussianHalo
 import numpy as np
 from copy import deepcopy
@@ -120,6 +119,30 @@ class Realization(object):
             rendering_center_y = interp1d(d, angle)
         self._rendering_center_x = rendering_center_x
         self._rendering_center_y = rendering_center_y
+
+    @property
+    def subhalos(self):
+        """
+        Return all subhalos in the realization, identified by their is_subhalo attribute being "True"
+        :return: a list of subhalos
+        """
+        subhalos = []
+        for halo in self.halos:
+            if halo.is_subhalo:
+                subhalos.append(halo)
+        return subhalos
+
+    @property
+    def field_halos(self):
+        """
+        Return all field halos in the realization, identified by their is_subhalo attribute being "False"
+        :return: a list of subhalos
+        """
+        field_halos = []
+        for halo in self.halos:
+            if not halo.is_subhalo:
+                field_halos.append(halo)
+        return field_halos
 
     def filter_bound_mass(self, bound_mass_minimum):
         """
@@ -696,9 +719,9 @@ class Realization(object):
                 model = TNFWFieldHalo
         elif mdef == 'TNFWC_SIDM':
             if is_subhalo:
-                model = TNFWCHalo
+                model = TNFWCHaloEvolving
             else:
-                model = TNFWCHalo
+                model = TNFWCHaloEvolving
         elif mdef == 'PT_MASS':
             model = BlackHole
         elif mdef == 'PJAFFE':
@@ -791,10 +814,29 @@ class Realization(object):
         else:
             return True
 
-    def plot(self, ax, annotation='', color_normalization=6, marker_size_normalization=7.5,
-             view_init_1=30.0, view_init_2=70.0, r_max=None, ray_interp_x_list=None, ray_interp_y_list=None,
-             scale_rays=1.0):
+    def plot(self, ax, annotation='', color_normalization=6, marker_size_normalization=7.5, marker_size_scaling=1.0,
+             view_init_1=30.0, view_init_2=70.0, r_max=None, ray_interp_x_list=None, ray_interp_y_list=None):
+        """
+        Plot a realization (like the README figure in github)
 
+        :param ax: a 3D axes instance
+        fig = plt.figure(1)
+        fig.set_size_inches(12, 12)
+        ax = plt.axes(projection='3d')
+        realizationCDM.plot(ax)
+        :param annotation: write some text in the upper right
+        :param color_normalization: sets the color of halos
+        :param marker_size_normalization: sets the overall size of halo blobs; the size scales with halo mass
+        :param marker_size_scaling: sets the scaling of the marker size with halo mass, 0.333 makes size ~ mass ^ 1/3
+        :param view_init_1: viewing angle along the x-axis
+        :param view_init_2: viewing angle along the y-axis
+        :param r_max: axes limits along x/y
+        :param ray_interp_x_list: an optional list of interp1d functions that return angular coordiantes given a comoving
+        distance; used to plot the path of light rays
+        :param ray_interp_y_list:an optional list of interp1d functions that return angular coordiantes given a comoving
+        distance; used to plot the path of light rays (see interpolate_ray_paths function in utilities.py)
+        :return:
+        """
         from matplotlib import cm
         import matplotlib.pyplot as plt
 
@@ -828,12 +870,12 @@ class Realization(object):
         masses = np.array(masses)
         colors = []
         for mi in masses:
-            rescaled_mass = max(0.2, (np.log10(mi) - color_normalization) / 4)
-            rescaled_mass = min(rescaled_mass, 0.75)
+            rescaled_mass = max(0.1, (np.log10(mi) - color_normalization) / 4)
+            rescaled_mass = min(rescaled_mass, 0.9)
             colors.append(cmap(rescaled_mass))
 
         distances_from_halo_redshifts = np.array([distance_calc(zi) for zi in redshifts])
-        sizes = 24 * (masses / 10**marker_size_normalization) ** 1.
+        sizes = 24 * (masses / 10**marker_size_normalization) ** marker_size_scaling
         ax.scatter(distances_from_halo_redshifts, np.array(x_comoving) / 206265,
                    np.array(y_comoving) / 206265,
                    s=sizes,
@@ -844,8 +886,8 @@ class Realization(object):
             z_array_lines = np.linspace(0.01, zsource, 100)
             d = np.array([distance_calc(zi) for zi in z_array_lines])
             for x_interp,y_interp in zip(ray_interp_x_list, ray_interp_y_list):
-                x_rays = scale_rays * d*x_interp(d)/206265
-                y_rays = scale_rays * d*y_interp(d)/206265
+                x_rays = d*x_interp(d)/206265
+                y_rays = d*y_interp(d)/206265
                 ax.plot(d, x_rays, y_rays, color='r',lw=3)
 
         ax.annotate(annotation, xy=(0.02, 0.045), fontsize=20)

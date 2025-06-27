@@ -7,10 +7,12 @@ presented here show what each keyword argument accepted by pyHalo does.
 
 __all__ = ['preset_model_from_name']
 
-def preset_model_from_name(name):
+def preset_model_from_name(name, custom_function=None):
     """
     Retruns a preset_model function from a string
     :param name: the name of the preset model, should be the name of a function in this file
+    :param custom_function: a function that takes some keyword arguments and returns an instance of Realization; for use
+    with the 'CUSTOM' preset model ID
     :return: the function
     """
     if name == 'CDM':
@@ -31,9 +33,9 @@ def preset_model_from_name(name):
     elif name == 'ULDM':
         from pyHalo.PresetModels.uldm import ULDM
         return ULDM
-    elif name == 'CDMEmulator':
-        from pyHalo.PresetModels.external import CDMFromEmulator
-        return CDMFromEmulator
+    elif name == 'DMEmulator':
+        from pyHalo.PresetModels.external import DMFromEmulator
+        return DMFromEmulator
     elif name == 'WDM_mixed':
         from pyHalo.PresetModels.wdm import WDM_mixed
         return WDM_mixed
@@ -46,6 +48,11 @@ def preset_model_from_name(name):
     elif name == 'CDM_plus_BH':
         from pyHalo.PresetModels.mbh import CDM_plus_BH
         return CDM_plus_BH
+    elif name == 'CUSTOM':
+        return custom_function
+    elif name == 'JointLOSWithEmulator':
+        from pyHalo.PresetModels.external import JointLOSWithEmulator
+        return JointLOSWithEmulator
     else:
         raise Exception('preset model '+ str(name)+' not recognized!')
 

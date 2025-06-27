@@ -3,7 +3,7 @@ from pyHalo.PresetModels.wdm import WDM, WDM_mixed
 from pyHalo.PresetModels.sidm import SIDM_core_collapse, SIDM_parametric
 from pyHalo.PresetModels.uldm import ULDM
 from pyHalo.preset_models import preset_model_from_name
-from pyHalo.PresetModels.external import CDMFromEmulator, DMFromGalacticus
+from pyHalo.PresetModels.external import DMSubhalosFromEmulator, DMFromGalacticus, JointLOSWithEmulator
 from pyHalo.Halos.galacticus_util.galacticus_util import GalacticusUtil
 from pyHalo.Halos.HaloModels.TNFWFromParams import TNFWFromParams
 import pytest
@@ -20,6 +20,12 @@ class TestPresetModels(object):
         lens_cosmo = realization.lens_cosmo
         infall_redshift_model = lens_cosmo._z_infall_model
         npt.assert_string_equal(default, infall_redshift_model.name)
+
+    def test_custom(self):
+
+        model = 'CUSTOM'
+        preset_model = preset_model_from_name(model, custom_function=CDM)
+        _ = preset_model(0.5, 2.0)
 
     def test_CDM(self):
 
@@ -49,6 +55,13 @@ class TestPresetModels(object):
                   kwargs_globular_clusters=kwargs_globular_clusters)
         _ = cdm.lensing_quantities()
 
+        cdm = CDM(0.5, 1.5,
+                  sigma_sub=None, log10_sigma_sub=None,
+                  log10_dNdA=-1,
+                  add_globular_clusters=True,
+                  kwargs_globular_clusters=kwargs_globular_clusters)
+        _ = cdm.lensing_quantities()
+
     def test_CDM_correlated_structure_only(self):
 
         cdm = CDMCorrelatedStructure(0.5, 1.5)
@@ -70,18 +83,50 @@ class TestPresetModels(object):
                   kwargs_globular_clusters=kwargs_globular_clusters)
         _ = wdm.lensing_quantities()
 
-    def test_SIDM(self):
+        wdm = WDM(0.5, 1.5,
+                  7.7,
+                  sigma_sub=None, log10_sigma_sub=None,
+                  log10_dNdA=-1,
+                  add_globular_clusters=True,
+                  kwargs_globular_clusters=kwargs_globular_clusters)
+        _ = wdm.lensing_quantities()
+
+    def test_SIDM_parametric(self):
 
         mass_ranges = [[6, 8], [8, 10]]
-        collapse_times = [10.5, 1.0]
-        sidm = SIDM_parametric(0.5, 1.5, mass_ranges, collapse_times)
+        log10_effective_cross_section_list = [2.0, 1.0]
+        sidm = SIDM_parametric(0.5, 1.5, mass_ranges, log10_effective_cross_section_list)
         _ = sidm.lensing_quantities()
         _ = preset_model_from_name('SIDM_parametric')
         self._test_default_infall_model(sidm, 'hybrid')
 
         model = preset_model_from_name('SIDM_parametric_fixedbins')
-        realization = model(0.5, 1.5, 5.0, 1.0)
+        realization = model(0.5, 1.5, 2.0, 1.0)
         _ = realization.lensing_quantities()
+
+    def test_SIDM_collapse_by_mass(self):
+
+        mass_ranges = [[6, 8], [8, 10]]
+        probabilities_subhalos = [1.0, 1.0]
+        probabilities_fieldhalos = [0.0, 0.0]
+        sidm = SIDM_core_collapse(0.5, 1.5, mass_ranges, mass_ranges,
+                                  probabilities_subhalos, probabilities_fieldhalos, collapsed_halo_profile='TNFWC',
+                                  x_core_halo=0.05)
+        _ = sidm.lensing_quantities()
+        _ = preset_model_from_name('SIDM_parametric')
+        self._test_default_infall_model(sidm, 'hybrid')
+
+        model = preset_model_from_name('SIDM_core_collapse')
+        realization = model(0.5, 1.5, mass_ranges, mass_ranges,
+                                  probabilities_subhalos, probabilities_fieldhalos, collapsed_halo_profile='TNFWC',
+                                  x_core_halo=0.05)
+        _ = realization.lensing_quantities()
+
+        for halo in sidm.halos:
+            if halo.is_subhalo:
+                npt.assert_string_equal(halo.mdef, 'TNFWC')
+            else:
+                npt.assert_string_equal(halo.mdef, 'TNFW')
 
     def test_ULDM(self):
 
@@ -91,17 +136,6 @@ class TestPresetModels(object):
         _ = uldm.lensing_quantities()
         _ = preset_model_from_name('ULDM')
         self._test_default_infall_model(uldm, 'hybrid')
-
-    def test_SIDM_core_collapse(self):
-        mass_ranges_subhalos = [[6, 8], [8, 10]]
-        mass_ranges_field_halos = [[6, 8], [8, 10]]
-        probabilities_subhalos = [1, 1]
-        probabilities_field_halos = [1, 1]
-        sidm_cc = SIDM_core_collapse(0.5, 1.5, mass_ranges_subhalos, mass_ranges_field_halos,
-        probabilities_subhalos, probabilities_field_halos)
-        _ = sidm_cc.lensing_quantities()
-        _ = preset_model_from_name('SIDM_core_collapse')
-        self._test_default_infall_model(sidm_cc, 'hybrid')
 
     def test_WDM_mixed(self):
         wdm_mixed = WDM_mixed(0.5, 1.5, 8.0, 0.5)
@@ -121,6 +155,7 @@ class TestPresetModels(object):
         _ = preset_model_from_name('CDM_plus_BH')
 
     def test_WDM_general(self):
+
         func = preset_model_from_name('WDMGeneral')
         wdm = func(0.5, 1.5, 7.7, -2.0)
         _ = wdm.lensing_quantities()
@@ -135,40 +170,60 @@ class TestPresetModels(object):
                   kwargs_globular_clusters=kwargs_globular_clusters)
         _ = wdm.lensing_quantities()
 
-    def test_CDM_emulator(self):
+        wdm = func(0.5, 1.5, 7.7, -2.5,
+                   sigma_sub=None, log10_sigma_sub=None,
+                   log10_dNdA=-1,
+                   add_globular_clusters=True,
+                   kwargs_globular_clusters=kwargs_globular_clusters)
+        _ = wdm.lensing_quantities()
+
+    def test_DM_emulator(self):
 
         def emulator_input_callable(*args, **kwargs):
             subhalo_infall_masses = np.array([10**7,10**8])
-            subhalo_x_kpc = np.array([1.0, 1.0])
-            subhalo_y_kpc = np.array([1.0, 1.0])
-            subhalo_final_bound_masses = subhalo_infall_masses / 2
             subhalo_infall_concentrations = np.array([16.0, 20.0])
-            return subhalo_infall_masses, subhalo_x_kpc, subhalo_y_kpc, subhalo_final_bound_masses, subhalo_infall_concentrations
+            subhalo_final_bound_masses = subhalo_infall_masses / 2
+            subhalo_infall_redshifts = np.array([2.0, 3.0])
+            subhalo_truncation_radii_kpc = np.array([5.0, 6.0])
+            subhalo_x_Mpc = np.array([0.001, 0.001])
+            subhalo_y_Mpc = np.array([0.001, 0.001])
+            return subhalo_infall_masses, subhalo_infall_concentrations, subhalo_final_bound_masses, subhalo_infall_redshifts, subhalo_truncation_radii_kpc, subhalo_x_Mpc, subhalo_y_Mpc
 
         concentrations = np.array([16.0, 20.0])
         mass_array = np.array([10 ** 7, 10 ** 8])
-        kwargs_cdm = {'LOS_normalization': 0.0}
-        cdm_subhalo_emulator = CDMFromEmulator(0.5, 1.5, emulator_input_callable, kwargs_cdm)
-        _ = cdm_subhalo_emulator.lensing_quantities()
-        for i, halo in enumerate(cdm_subhalo_emulator.halos):
-            npt.assert_equal(halo.mass, mass_array[i])
-            npt.assert_almost_equal(halo.x, 0.1584666, 4)
-            npt.assert_almost_equal(halo.y, 0.1584666, 4)
-            npt.assert_equal(halo.c, concentrations[i])
+        infall_redshifts = np.array([2.0, 3.0])
+        truncation_radii = np.array([5.0, 6.0])
+        emulator_kwargs = {'emulator_data_function': emulator_input_callable}
 
-        emulator_input_array = np.empty((2, 5))
-        emulator_input_array[:, 0] = mass_array
-        emulator_input_array[:, 1] = np.array([1.0, 1.0])
-        emulator_input_array[:, 2] = np.array([1.0, 1.0])
-        emulator_input_array[:, 3] = mass_array / 2
-        emulator_input_array[:, 4] = concentrations
-        cdm_subhalo_emulator = CDMFromEmulator(0.5, 1.5, emulator_input_array, kwargs_cdm)
-        _ = cdm_subhalo_emulator.lensing_quantities()
-        for i, halo in enumerate(cdm_subhalo_emulator.halos):
+        dm_subhalo_emulator = DMSubhalosFromEmulator(0.5, 1.5, **emulator_kwargs)
+        _ = dm_subhalo_emulator.lensing_quantities()
+        for i, halo in enumerate(dm_subhalo_emulator.halos):
             npt.assert_equal(halo.mass, mass_array[i])
+            npt.assert_equal(halo.c, concentrations[i])
+            #npt.assert_equal(halo.bound_mass, mass_array[i]/2)
+            npt.assert_equal(halo.z_infall, infall_redshifts[i])
+            #npt.assert_equal(halo.params_physical['r_trunc_kpc'], truncation_radii[i])
             npt.assert_almost_equal(halo.x, 0.1584666, 4)
             npt.assert_almost_equal(halo.y, 0.1584666, 4)
-            npt.assert_equal(halo.c, concentrations[i])
+
+    def test_DM_emulator_with_LOS(self):
+
+        def emulator_input_callable(*args, **kwargs):
+            subhalo_infall_masses = np.array([10**7,10**8])
+            subhalo_infall_concentrations = np.array([16.0, 20.0])
+            subhalo_final_bound_masses = subhalo_infall_masses / 2
+            subhalo_infall_redshifts = np.array([2.0, 3.0])
+            subhalo_truncation_radii_kpc = np.array([5.0, 6.0])
+            subhalo_x_Mpc = np.array([0.001, 0.001])
+            subhalo_y_Mpc = np.array([0.001, 0.001])
+            return subhalo_infall_masses, subhalo_infall_concentrations, subhalo_final_bound_masses, subhalo_infall_redshifts, subhalo_truncation_radii_kpc, subhalo_x_Mpc, subhalo_y_Mpc
+
+        preset_model_name_LOS = 'WDM'
+        cone_opening_angle_arcsec = 6.0
+        dm_emulator = JointLOSWithEmulator(0.5, 1.5, emulator_input_callable,
+                                                   cone_opening_angle_arcsec, preset_model_name_LOS,
+                                                   sigma_sub=0.0, LOS_normalization=1.0, log_mc=7.7)
+        _ = dm_emulator.lensing_quantities()
 
     def test_galacticus(self):
         util = GalacticusUtil()
